@@ -154,28 +154,40 @@ for p in positions:
 
 df = pd.DataFrame(rows)
 
-# ---------- ALERT UI ----------
+# ---------- ALERT UI (session state) ----------
 st.sidebar.header("Set Alert")
 if "alerts" not in st.session_state:
     st.session_state.alerts = []
 if "triggered" not in st.session_state:
     st.session_state.triggered = set()
 
-# Prefilled values when Add Alert button clicked in main table
+# make contract list and handle prefill safely
+symbols = df["Symbol"].unique().tolist() if not df.empty else []
+pref_sym = st.session_state.get("prefill_symbol", None)
+default_index = symbols.index(pref_sym) if (pref_sym in symbols) else 0 if symbols else 0
+
+criteria_list = ["UPNL (USD)", "Mark Price"]
+pref_crit = st.session_state.get("prefill_criteria", None)
+default_crit_index = criteria_list.index(pref_crit) if (pref_crit in criteria_list) else 0
+
+cond_list = [">=", "<="]
+pref_cond = st.session_state.get("prefill_condition", None)
+default_cond_index = cond_list.index(pref_cond) if (pref_cond in cond_list) else 0
+
 contract_choice = st.sidebar.selectbox(
     "Contract",
-    df["Symbol"].unique(),
-    index=list(df["Symbol"].unique()).index(st.session_state.get("prefill_symbol", df["Symbol"].iloc[0]))
+    symbols if symbols else ["No Contracts"],
+    index=default_index if symbols else 0
 )
 criteria_choice = st.sidebar.selectbox(
     "Criteria",
-    ["UPNL (USD)", "Mark Price"],
-    index=0 if st.session_state.get("prefill_criteria") == "UPNL (USD)" else 1
+    criteria_list,
+    index=default_crit_index
 )
 condition_choice = st.sidebar.selectbox(
     "Condition",
-    [">=", "<="],
-    index=0 if st.session_state.get("prefill_condition") == ">=" else 1
+    cond_list,
+    index=default_cond_index
 )
 threshold_value = st.sidebar.number_input(
     "Threshold",
@@ -184,13 +196,16 @@ threshold_value = st.sidebar.number_input(
 )
 
 if st.sidebar.button("Add Alert"):
-    st.session_state.alerts.append({
-        "symbol": contract_choice,
-        "criteria": criteria_choice,
-        "condition": condition_choice,
-        "threshold": threshold_value
-    })
-    st.sidebar.success(f"Alert added for {contract_choice}")
+    if symbols:
+        st.session_state.alerts.append({
+            "symbol": contract_choice,
+            "criteria": criteria_choice,
+            "condition": condition_choice,
+            "threshold": threshold_value
+        })
+        st.sidebar.success(f"Alert added for {contract_choice}")
+    else:
+        st.sidebar.error("No contracts available to add an alert for.")
     # Clear prefill
     for k in ["prefill_symbol", "prefill_criteria", "prefill_condition", "prefill_threshold"]:
         st.session_state.pop(k, None)
@@ -201,7 +216,7 @@ for alert in st.session_state.alerts:
     row = df[df["Symbol"] == alert["symbol"]]
     if row.empty:
         continue
-    val_str = row.iloc[0][alert["criteria"]]
+    val_str = row.iloc[0].get(alert["criteria"])
     try:
         val = float(val_str)
     except:
@@ -217,7 +232,63 @@ for alert in st.session_state.alerts:
 if triggered_alerts:
     st.error("Triggered Alerts:\n" + "\n".join(triggered_alerts))
 
-# ---------- DISPLAY TABLE WITH ALERT BUTTON ----------
+# ---------- DISPLAY TITLE ----------
+st.title("Delta Exchange Positions (Auto-refresh every 3s, Alerts Enabled)")
+
+# ---------- CUSTOM TABLE: header + rows ----------
+# This builds a row-by-row display where the final column (right-most) is the Add Alert button.
+if df.empty:
+    st.info("No position rows to display.")
+else:
+    # Header
+    col_count = len(df.columns) + 1  # +1 for the Alert button column
+    header_cols = st.columns([1] * col_count)
+    for i, cname in enumerate(df.columns):
+        header_cols[i].markdown(f"**{cname}**")
+    header_cols[-1].markdown("**Alert**")
+
+    # Rows
+    for idx, row in df.iterrows():
+        # create columns for all df columns + the final Alert button column
+        row_cols = st.columns([1] * col_count)
+        for i, cname in enumerate(df.columns):
+            val = row[cname]
+            # specific formatting for UPNL (USD) to visually match the prior color styling
+            if cname == "UPNL (USD)":
+                # try numeric and color accordingly
+                try:
+                    num = float(val)
+                    if num > 0:
+                        bgcolor = "#bff2c4"  # light green
+                    elif num < 0:
+                        bgcolor = "#f7bdbd"  # light red
+                    else:
+                        bgcolor = "transparent"
+                    cell_html = f"<div style='padding:6px;border-radius:6px;background:{bgcolor};text-align:right'>{num:.2f}</div>"
+                except:
+                    cell_html = f"<div style='padding:6px;text-align:right'>{val}</div>"
+                row_cols[i].markdown(cell_html, unsafe_allow_html=True)
+            else:
+                # right align numeric-looking columns, left align otherwise
+                try:
+                    # numeric check
+                    float_val = float(str(val).replace(",", ""))
+                    row_cols[i].markdown(f"<div style='text-align:right;padding:4px'>{float_val}</div>", unsafe_allow_html=True)
+                except:
+                    row_cols[i].markdown(f"<div style='text-align:left;padding:4px'>{val}</div>", unsafe_allow_html=True)
+
+        # Alert button in the right-most column
+        if row_cols[-1].button("➕ Alert", key=f"add_alert_{idx}"):
+            # prefill the sidebar form for quick alert creation
+            st.session_state["prefill_symbol"] = row["Symbol"]
+            st.session_state["prefill_criteria"] = "UPNL (USD)"
+            st.session_state["prefill_condition"] = ">="
+            st.session_state["prefill_threshold"] = 0.0
+            # Inform user to use sidebar to finalize
+            st.sidebar.info(f"Pre-filled alert form for {row['Symbol']} — set threshold and click Add Alert")
+
+# ---------- SHOW ORIGINAL DATAFRAME STYLED (optional for reference) ----------
+# keep this if you still want the interactive styled dataframe below the custom table
 def color_pnl(val):
     try:
         num = float(val)
@@ -229,31 +300,18 @@ def color_pnl(val):
         return "background-color: salmon"
     return ""
 
-st.title("Delta Exchange Positions (Auto-refresh every 3s, Alerts Enabled)")
+with st.expander("Show styled dataframe (visual reference)", expanded=False):
+    st.dataframe(df.style.applymap(color_pnl, subset=["UPNL (USD)"]))
 
-# Show table with Add Alert buttons
-for idx, row in df.iterrows():
-    cols = st.columns([4, 1])
-    with cols[0]:
-        st.write(row.to_dict())
-    with cols[1]:
-        if st.button("➕ Alert", key=f"add_alert_{idx}"):
-            st.session_state["prefill_symbol"] = row["Symbol"]
-            st.session_state["prefill_criteria"] = "UPNL (USD)"
-            st.session_state["prefill_condition"] = ">="
-            st.session_state["prefill_threshold"] = 0.0
-            st.sidebar.info(f"Pre-filled alert form for {row['Symbol']}")
-
-st.dataframe(df.style.applymap(color_pnl, subset=["UPNL (USD)"]))
-
-# ---------- ACTIVE ALERTS MAIN AREA ----------
+# ---------- ACTIVE ALERTS MAIN AREA (removable) ----------
 if st.session_state.alerts:
     st.subheader("Active Alerts")
-    for i, alert in enumerate(st.session_state.alerts):
+    for i, alert in enumerate(list(st.session_state.alerts)):  # copy to allow safe pop
         cols = st.columns([5, 1])
         with cols[0]:
             st.write(alert)
         with cols[1]:
             if st.button("❌ Remove", key=f"remove_alert_{i}"):
+                # remove that alert and rerun to refresh UI
                 st.session_state.alerts.pop(i)
                 st.experimental_rerun()
