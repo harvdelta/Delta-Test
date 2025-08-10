@@ -83,8 +83,7 @@ def send_telegram_message(text):
     except:
         pass
 
-def color_upnl(val):
-    """Return HTML for colored UPNL badge."""
+def badge_upnl(val):
     try:
         num = float(val)
     except:
@@ -99,6 +98,23 @@ def color_upnl(val):
         bg = "#ddd"
         color = "#000"
     return f"<span style='padding:4px 8px;border-radius:6px;background:{bg};color:{color};font-weight:bold;'>{num:.2f}</span>"
+
+def badge_price(mark, entry):
+    try:
+        m = float(mark)
+        e = float(entry)
+    except:
+        return f"<span style='padding:4px 8px;border-radius:6px;background:#ccc;color:#000;'>{mark}</span>"
+    if m > e:
+        bg = "#b6f7b0"
+        color = "#065f08"
+    elif m < e:
+        bg = "#f7b0b0"
+        color = "#6b0000"
+    else:
+        bg = "#ddd"
+        color = "#000"
+    return f"<span style='padding:4px 8px;border-radius:6px;background:{bg};color:{color};font-weight:bold;'>{m:.2f}</span>"
 
 # ---------- fetch data ----------
 positions_j = api_get("/v2/positions/margined")
@@ -120,9 +136,6 @@ for t in tickers:
     if "ETH" in sym and "USD" in sym and "ETH" not in index_map:
         index_map["ETH"] = price
 
-# ---------- lots per coin mapping ----------
-DEFAULT_LOTS = {"BTC": 1000.0, "ETH": 100.0}
-
 # ---------- process positions ----------
 rows = []
 for p in positions:
@@ -130,9 +143,6 @@ for p in positions:
     contract_symbol = product.get("symbol") or p.get("symbol") or ""
     size_lots = to_float(p.get("size"))
     underlying = detect_underlying(product, contract_symbol)
-
-    lots_per_coin = DEFAULT_LOTS.get(underlying, 1.0)
-    size_coins = size_lots / lots_per_coin if size_lots is not None else None
 
     entry_price = to_float(p.get("entry_price"))
     mark_price = to_float(p.get("mark_price"))
@@ -149,19 +159,20 @@ for p in positions:
 
     # UPNL calculation
     upnl_val = None
+    size_coins = None
+    if size_lots is not None and underlying:
+        lots_per_coin = {"BTC": 1000.0, "ETH": 100.0}.get(underlying, 1.0)
+        size_coins = size_lots / lots_per_coin
     if entry_price is not None and mark_price is not None and size_coins is not None:
         if size_coins < 0:
             upnl_val = (entry_price - mark_price) * abs(size_coins)
         else:
             upnl_val = (mark_price - entry_price) * abs(size_coins)
 
-    notional = abs(size_coins) * index_price if index_price is not None and size_coins is not None else None
-
     rows.append({
         "Symbol": contract_symbol,
         "Size (lots)": f"{size_lots:.0f}" if size_lots is not None else None,
         "Size (coins)": f"{size_coins:.2f}" if size_coins is not None else None,
-        "Notional (USD)": f"{notional:.2f}" if notional is not None else None,
         "Entry Price": f"{entry_price:.2f}" if entry_price is not None else None,
         "Index Price": f"{index_price:.2f}" if index_price is not None else None,
         "Mark Price": f"{mark_price:.2f}" if mark_price is not None else None,
@@ -201,35 +212,49 @@ if triggered_alerts:
     st.error("Triggered Alerts:\n" + "\n".join(triggered_alerts))
 
 # ---------- LAYOUT ----------
-st.title("Delta Exchange Positions (Auto-refresh every 3s, Alerts Enabled)")
+st.title("📊 Delta Exchange Positions")
 
 left_col, right_col = st.columns([3, 1])
 
-# --- LEFT: TABLE WITH ADD ALERT BUTTONS ---
+# --- LEFT: TABLE ---
 if not df.empty:
     col_count = len(df.columns) + 1
     header_cols = left_col.columns([1] * col_count)
     for i, cname in enumerate(df.columns):
-        header_cols[i].markdown(f"**{cname}**")
+        header_cols[i].markdown(f"<b>{cname}</b>", unsafe_allow_html=True)
     header_cols[-1].markdown("**Alert**")
 
     for idx, row in df.iterrows():
+        row_style = "background-color:#f9f9f9;" if idx % 2 == 0 else "background-color:#ffffff;"
         row_cols = left_col.columns([1] * col_count)
         for i, cname in enumerate(df.columns):
             if cname == "UPNL (USD)":
-                row_cols[i].markdown(color_upnl(row[cname]), unsafe_allow_html=True)
+                row_cols[i].markdown(badge_upnl(row[cname]), unsafe_allow_html=True)
+            elif cname == "Mark Price":
+                row_cols[i].markdown(badge_price(row["Mark Price"], row["Entry Price"]), unsafe_allow_html=True)
             else:
-                row_cols[i].write(row[cname])
+                row_cols[i].markdown(f"<div style='{row_style}padding:4px'>{row[cname]}</div>", unsafe_allow_html=True)
         if row_cols[-1].button("➕", key=f"add_alert_{idx}"):
             st.session_state.edit_symbol = row["Symbol"]
 
 # --- RIGHT: ALERT EDITOR ---
 if st.session_state.edit_symbol:
     row = df[df["Symbol"] == st.session_state.edit_symbol].iloc[0]
-    right_col.subheader(f"Create Alert")
+    try:
+        upnl_val = float(row["UPNL (USD)"])
+        if upnl_val > 0:
+            header_bg = "#b6f7b0"
+        elif upnl_val < 0:
+            header_bg = "#f7b0b0"
+        else:
+            header_bg = "#ddd"
+    except:
+        header_bg = "#ddd"
+
+    right_col.markdown(f"<div style='background:{header_bg};padding:10px;border-radius:8px'><b>Create Alert</b></div>", unsafe_allow_html=True)
     right_col.markdown(f"**Symbol:** {st.session_state.edit_symbol}")
-    right_col.markdown(f"**UPNL (USD):** {color_upnl(row['UPNL (USD)'])}", unsafe_allow_html=True)
-    right_col.markdown(f"**Mark Price:** {row['Mark Price']}")
+    right_col.markdown(f"**UPNL (USD):** {badge_upnl(row['UPNL (USD)'])}", unsafe_allow_html=True)
+    right_col.markdown(f"**Mark Price:** {badge_price(row['Mark Price'], row['Entry Price'])}", unsafe_allow_html=True)
 
     with right_col.form("alert_form"):
         criteria_choice = st.selectbox("Criteria", ["UPNL (USD)", "Mark Price"])
