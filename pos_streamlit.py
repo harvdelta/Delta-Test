@@ -83,6 +83,23 @@ def send_telegram_message(text):
     except:
         pass
 
+def color_upnl(val):
+    """Return HTML for colored UPNL badge."""
+    try:
+        num = float(val)
+    except:
+        return f"<span style='padding:4px 8px;border-radius:6px;background:#ccc;color:#000;'>{val}</span>"
+    if num > 0:
+        bg = "#b6f7b0"
+        color = "#065f08"
+    elif num < 0:
+        bg = "#f7b0b0"
+        color = "#6b0000"
+    else:
+        bg = "#ddd"
+        color = "#000"
+    return f"<span style='padding:4px 8px;border-radius:6px;background:{bg};color:{color};font-weight:bold;'>{num:.2f}</span>"
+
 # ---------- fetch data ----------
 positions_j = api_get("/v2/positions/margined")
 positions = positions_j.get("result", []) if isinstance(positions_j, dict) else []
@@ -158,8 +175,6 @@ if "alerts" not in st.session_state:
     st.session_state.alerts = []
 if "triggered" not in st.session_state:
     st.session_state.triggered = set()
-if "show_alert_editor" not in st.session_state:
-    st.session_state.show_alert_editor = False
 if "edit_symbol" not in st.session_state:
     st.session_state.edit_symbol = None
 
@@ -185,36 +200,38 @@ for alert in st.session_state.alerts:
 if triggered_alerts:
     st.error("Triggered Alerts:\n" + "\n".join(triggered_alerts))
 
-# ---------- DISPLAY TABLE ----------
+# ---------- LAYOUT ----------
 st.title("Delta Exchange Positions (Auto-refresh every 3s, Alerts Enabled)")
 
+left_col, right_col = st.columns([3, 1])
+
+# --- LEFT: TABLE WITH ADD ALERT BUTTONS ---
 if not df.empty:
-    # Header
     col_count = len(df.columns) + 1
-    header_cols = st.columns([1] * col_count)
+    header_cols = left_col.columns([1] * col_count)
     for i, cname in enumerate(df.columns):
         header_cols[i].markdown(f"**{cname}**")
     header_cols[-1].markdown("**Alert**")
 
-    # Rows
     for idx, row in df.iterrows():
-        row_cols = st.columns([1] * col_count)
+        row_cols = left_col.columns([1] * col_count)
         for i, cname in enumerate(df.columns):
-            row_cols[i].write(row[cname])
+            if cname == "UPNL (USD)":
+                row_cols[i].markdown(color_upnl(row[cname]), unsafe_allow_html=True)
+            else:
+                row_cols[i].write(row[cname])
         if row_cols[-1].button("➕", key=f"add_alert_{idx}"):
-            st.session_state.show_alert_editor = True
             st.session_state.edit_symbol = row["Symbol"]
 
-# ---------- ALERT EDITOR POPUP ----------
-if st.session_state.show_alert_editor and st.session_state.edit_symbol:
-    st.markdown(
-        """
-        <div style='background-color:#222;padding:20px;border-radius:10px;margin-top:20px;'>
-        """,
-        unsafe_allow_html=True
-    )
-    st.subheader(f"Create Alert for {st.session_state.edit_symbol}")
-    with st.form("alert_form"):
+# --- RIGHT: ALERT EDITOR ---
+if st.session_state.edit_symbol:
+    row = df[df["Symbol"] == st.session_state.edit_symbol].iloc[0]
+    right_col.subheader(f"Create Alert")
+    right_col.markdown(f"**Symbol:** {st.session_state.edit_symbol}")
+    right_col.markdown(f"**UPNL (USD):** {color_upnl(row['UPNL (USD)'])}", unsafe_allow_html=True)
+    right_col.markdown(f"**Mark Price:** {row['Mark Price']}")
+
+    with right_col.form("alert_form"):
         criteria_choice = st.selectbox("Criteria", ["UPNL (USD)", "Mark Price"])
         condition_choice = st.selectbox("Condition", [">=", "<="])
         threshold_value = st.number_input("Threshold", format="%.2f")
@@ -226,14 +243,14 @@ if st.session_state.show_alert_editor and st.session_state.edit_symbol:
                 "condition": condition_choice,
                 "threshold": threshold_value
             })
-            st.session_state.show_alert_editor = False
             st.session_state.edit_symbol = None
             st.success("Alert added!")
-    st.markdown("</div>", unsafe_allow_html=True)
+else:
+    right_col.info("Select a contract to set an alert")
 
-# ---------- ACTIVE ALERTS ----------
+# --- ACTIVE ALERTS ---
+st.subheader("Active Alerts")
 if st.session_state.alerts:
-    st.subheader("Active Alerts")
     for i, alert in enumerate(list(st.session_state.alerts)):
         cols = st.columns([5, 1])
         with cols[0]:
@@ -242,3 +259,5 @@ if st.session_state.alerts:
             if st.button("❌", key=f"remove_alert_{i}"):
                 st.session_state.alerts.pop(i)
                 st.experimental_rerun()
+else:
+    st.write("No active alerts.")
