@@ -89,7 +89,6 @@ try:
 num = float(val)
 except:
 return val
-# Keep the numeric formatting identical
 if num > 0:
 return f"{num:.2f}"
 elif num < 0:
@@ -166,7 +165,7 @@ rows.append({
 })
 df = pd.DataFrame(rows)
 
-Sort by absolute UPNL (keep exact formatting)
+Sort by absolute UPNL (preserve displayed formatting)
 if not df.empty:
 df = df.sort_values(
 by="UPNL (USD)",
@@ -196,8 +195,9 @@ for alert in list(st.session_state.alerts):
 row = df[df["Symbol"] == alert["symbol"]]
 if row.empty:
 continue
-val_str = row.iloc.get(alert["criteria"])
-val = get_float_from_cell(val_str)
+# Extract the latest value for the chosen criteria from the row
+cell_val = row.iloc.get(alert["criteria"])
+val = get_float_from_cell(cell_val)
 if val is None:
 continue
 if alert["condition"] == ">=":
@@ -215,43 +215,35 @@ send_telegram_message(m)
 ---------- CSS ----------
 st.markdown("""
 
-<style> /* Keep UI unchanged; only ensure popup appears as overlay */ .alert-modal { position: fixed; top: 0; left: 0; right:0; bottom:0; background: rgba(0,0,0,0.45); z-index: 9999; display: flex; align-items: center; justify-content: center; } .alert-card { background: #111827; border: 1px solid #374151; border-radius: 10px; padding: 16px; width: 360px; color: #e5e7eb; box-shadow: 0 10px 30px rgba(0,0,0,0.5); } .alert-card h4 { margin: 0 0 10px 0; } .alert-card .row { margin-bottom: 10px; } .alert-card .row label { display: block; font-size: 12px; color: #9ca3af; margin-bottom: 4px; } .alert-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; } </style>
+<style> .alert-modal { position: fixed; top: 0; left: 0; right:0; bottom:0; background: rgba(0,0,0,0.45); z-index: 9999; display: flex; align-items: center; justify-content: center; } .alert-card { background: #111827; border: 1px solid #374151; border-radius: 10px; padding: 16px; width: 360px; color: #e5e7eb; box-shadow: 0 10px 30px rgba(0,0,0,0.5); } .alert-card h4 { margin: 0 0 10px 0; } .alert-card .row { margin-bottom: 10px; } .alert-card .row label { display: block; font-size: 12px; color: #9ca3af; margin-bottom: 4px; } .alert-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; } </style>
 """, unsafe_allow_html=True)
 
 ---------- LAYOUT ----------
-left_col, right_col = st.columns([4,]
+left_col, right_col = st.columns(2)
 
 --- LEFT: TABLE ---
 if not df.empty:
-# Build HTML table to preserve your UI
 cols = list(df.columns)
 table_html = '<div style="overflow-x:auto;"><table class="table" style="width:100%; border-collapse:collapse;">'
-# Header
 table_html += "<thead><tr>"
 for col in cols:
 table_html += f"<th style='text-align:left; padding:8px; border-bottom:1px solid #333;'>{col.upper()}</th>"
 table_html += "<th style='text-align:left; padding:8px; border-bottom:1px solid #333;'>ALERT</th>"
 table_html += "</tr></thead>"
-
-text
-# Body rows
 table_html += "<tbody>"
 for idx, row in df.iterrows():
-    table_html += "<tr>"
-    for col in cols:
-        val = row[col]
-        if col == "UPNL (USD)":
-            val = badge_upnl(val)
-        table_html += f"<td style='padding:8px; border-bottom:1px solid #222;'>{val if val is not None else ''}</td>"
-
-    # ALERT column: render a + button using a unique Streamlit button per row (outside HTML string)
-    table_html += f"<td style='padding:8px; border-bottom:1px solid #222;'>{{BTN_PLACEHOLDER_{idx}}}</td>"
-    table_html += "</tr>"
+table_html += "<tr>"
+for col in cols:
+val = row[col]
+if col == "UPNL (USD)":
+val = badge_upnl(val)
+table_html += f"<td style='padding:8px; border-bottom:1px solid #222;'>{val if val is not None else ''}</td>"
+table_html += f"<td style='padding:8px; border-bottom:1px solid #222;'>{{BTN_PLACEHOLDER_{idx}}}</td>"
+table_html += "</tr>"
 table_html += "</tbody></table></div>"
 
-# Render the table row-by-row so we can inject Streamlit buttons
-# Split HTML before/after each placeholder
-# Prepare parts
+text
+# Interleave HTML with Streamlit buttons
 rendered = table_html
 parts = []
 placeholders = []
@@ -264,63 +256,57 @@ for i in range(len(df)):
         rendered = after
 parts.append(rendered)
 
-# Output with interleaved buttons
 for i, part in enumerate(parts):
-    st.markdown(part, unsafe_allow_html=True)
-    if i < len(placeholders):
-        r_idx = placeholders[i]
-        symbol_here = df.iloc[r_idx]["Symbol"]
-
-        # The actual + button per row
-        if st.button("+", key=f"add_alert_{r_idx}"):
-            st.session_state.alert_form_open = True
-            st.session_state.alert_form_symbol = symbol_here
-            st.rerun()
+    with left_col:
+        st.markdown(part, unsafe_allow_html=True)
+        if i < len(placeholders):
+            r_idx = placeholders[i]
+            symbol_here = df.iloc[r_idx]["Symbol"]
+            if st.button("+", key=f"add_alert_{r_idx}"):
+                st.session_state.alert_form_open = True
+                st.session_state.alert_form_symbol = symbol_here
+                st.rerun()
 else:
 with left_col:
 st.write("No positions found.")
 
---- RIGHT: SIMPLE LIST OF ALERTS (unchanged UI philosophy) ---
+--- RIGHT: SIMPLE LIST OF ALERTS ---
 with right_col:
 st.subheader("Alerts")
 if st.session_state.alerts:
-for a_i, a in enumerate(st.session_state.alerts):
+for a in st.session_state.alerts:
 st.write(f"{a['symbol']} - {a['criteria']} {a['condition']} {a['threshold']}")
 else:
 st.write("No alerts yet.")
 
----------- POPUP FORM (appears when + is clicked) ----------
+---------- POPUP FORM ----------
 def popup():
 st.markdown('<div class="alert-modal"><div class="alert-card">', unsafe_allow_html=True)
 st.markdown("<h4>Create Alert</h4>", unsafe_allow_html=True)
 
 text
 symbol = st.session_state.alert_form_symbol or ""
-criteria_default = "Mark Price"
 criteria_options = ["Mark Price", "Index Price", "Entry Price", "UPNL (USD)", "Size (coins)", "Size (lots)"]
+default_idx = criteria_options.index("Mark Price")
 
-# Inline form controls with Streamlit widgets
-# Use unique keys so reruns keep values
-criteria = st.selectbox("Criteria", criteria_options, index=criteria_options.index(criteria_default) if criteria_default in criteria_options else 0, key="alert_criteria_select")
+criteria = st.selectbox("Criteria", criteria_options, index=default_idx, key="alert_criteria_select")
 condition = st.selectbox("Condition", [">=", "<="], key="alert_condition_select")
 threshold = st.text_input("Threshold (number)", key="alert_threshold_input")
 
 st.markdown('<div class="alert-actions">', unsafe_allow_html=True)
-col1, col2 = st.columns()[1]
-with col1:
+c1, c2 = st.columns(2)
+with c1:
     if st.button("Cancel", key="alert_cancel_btn"):
         st.session_state.alert_form_open = False
         st.session_state.alert_form_symbol = None
         st.rerun()
-with col2:
+with c2:
     if st.button("Create", key="alert_create_btn"):
         try:
             th = float(threshold)
         except:
             st.warning("Enter a valid numeric threshold.")
             st.stop()
-
-        # Save alert
         st.session_state.alerts.append({
             "symbol": symbol,
             "criteria": criteria,
@@ -331,5 +317,7 @@ with col2:
         st.session_state.alert_form_symbol = None
         st.success("Alert created.")
         st.rerun()
-st.markdown('</div>', unsafe_allow_html=True)  # actions
-st.markdown('</div></div>', unsafe_allow_html=True)  # card+modal
+st.markdown('</div>', unsafe_allow_html=True)
+st.markdown('</div></div>', unsafe_allow_html=True)
+if st.session_state.alert_form_open:
+popup()
