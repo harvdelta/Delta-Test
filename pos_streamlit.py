@@ -170,7 +170,7 @@ if "triggered" not in st.session_state:
 if "edit_symbol" not in st.session_state:
     st.session_state.edit_symbol = None
 
-# ---------- ALERT CHECK ----------
+# ---------- ALERT CHECK (fixed to avoid repeats) ----------
 for alert in st.session_state.alerts:
     row = df[df["Symbol"] == alert["symbol"]]
     if row.empty:
@@ -180,9 +180,16 @@ for alert in st.session_state.alerts:
         val = float(val_str)
     except:
         continue
+
     cond = (val >= alert["threshold"]) if alert["condition"] == ">=" else (val <= alert["threshold"])
-    if cond:
+    alert_id = f"{alert['symbol']}-{alert['criteria']}-{alert['condition']}-{alert['threshold']}"
+
+    if cond and alert_id not in st.session_state.triggered:
         send_telegram_message(f"ALERT: {alert['symbol']} {alert['criteria']} {alert['condition']} {alert['threshold']}")
+        st.session_state.triggered.add(alert_id)
+
+    if not cond and alert_id in st.session_state.triggered:
+        st.session_state.triggered.remove(alert_id)
 
 # ---------- CSS ----------
 st.markdown("""
@@ -200,7 +207,6 @@ st.markdown("""
 query_params = st.query_params
 if "edit_symbol" in query_params:
     st.session_state.edit_symbol = query_params["edit_symbol"]
-    # Clear the URL parameter
     st.query_params.clear()
 elif "delete_alert" in query_params:
     try:
@@ -231,11 +237,8 @@ if not df.empty:
                 table_html += f"<td>{badge_upnl(row[col])}</td>"
             else:
                 table_html += f"<td>{row[col]}</td>"
-        
-        # Create clickable + button that updates URL in same tab
         symbol_encoded = row['Symbol'].replace(' ', '%20').replace('&', '%26')
-        table_html += f"""<td><a href="?edit_symbol={symbol_encoded}" 
-                         target="_self" style="text-decoration: none;">
+        table_html += f"""<td><a href="?edit_symbol={symbol_encoded}" target="_self" style="text-decoration: none;">
                          <span class='alert-btn'>+</span></a></td>"""
         table_html += "</tr>"
 
@@ -244,7 +247,6 @@ if not df.empty:
 
 # --- RIGHT: ALERT EDITOR ---
 if st.session_state.edit_symbol:
-    # Find the row for the selected symbol
     matching_rows = df[df["Symbol"] == st.session_state.edit_symbol]
     if not matching_rows.empty:
         sel_row = matching_rows.iloc[0]
@@ -284,7 +286,6 @@ else:
 # --- ACTIVE ALERTS ---
 st.subheader("Active Alerts")
 if st.session_state.alerts:
-    # Create alerts table HTML with simpler structure
     alerts_html = "<table class='full-width-table'><thead><tr>"
     alerts_html += "<th>SYMBOL</th><th>CRITERIA</th><th>CONDITION</th><th>THRESHOLD</th><th>DELETE</th>"
     alerts_html += "</tr></thead><tbody>"
