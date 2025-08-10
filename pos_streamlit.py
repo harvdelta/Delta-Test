@@ -10,6 +10,7 @@ from streamlit_autorefresh import st_autorefresh
 
 # Auto-refresh every 3 seconds
 st_autorefresh(interval=3000)
+st.set_page_config(layout="wide")
 
 # ---------- CONFIG ----------
 API_KEY = st.secrets["DELTA_API_KEY"]
@@ -89,11 +90,11 @@ def badge_upnl(val):
     except:
         return val
     if num > 0:
-        return f"<span style='padding:4px 8px;border-radius:6px;background:#b6f7b0;color:#065f08;font-weight:bold;'>{num:.2f}</span>"
+        return f"<span style='padding:4px 8px;border-radius:6px;background:#4CAF50;color:white;font-weight:bold;'>{num:.2f}</span>"
     elif num < 0:
-        return f"<span style='padding:4px 8px;border-radius:6px;background:#f7b0b0;color:#6b0000;font-weight:bold;'>{num:.2f}</span>"
+        return f"<span style='padding:4px 8px;border-radius:6px;background:#F44336;color:white;font-weight:bold;'>{num:.2f}</span>"
     else:
-        return f"<span style='padding:4px 8px;border-radius:6px;background:#ddd;color:#000;font-weight:bold;'>{num:.2f}</span>"
+        return f"<span style='padding:4px 8px;border-radius:6px;background:#999;color:white;font-weight:bold;'>{num:.2f}</span>"
 
 # ---------- fetch data ----------
 positions_j = api_get("/v2/positions/margined")
@@ -159,12 +160,7 @@ for p in positions:
 df = pd.DataFrame(rows)
 
 # Sort by absolute UPNL
-def safe_abs_upnl(val):
-    try:
-        return abs(float(val))
-    except:
-        return -999999
-df = df.sort_values(by="UPNL (USD)", key=lambda x: x.map(safe_abs_upnl), ascending=False).reset_index(drop=True)
+df = df.sort_values(by="UPNL (USD)", key=lambda x: x.map(lambda v: abs(float(v)) if v else -999999), ascending=False).reset_index(drop=True)
 
 # ---------- STATE ----------
 if "alerts" not in st.session_state:
@@ -175,7 +171,6 @@ if "edit_symbol" not in st.session_state:
     st.session_state.edit_symbol = None
 
 # ---------- ALERT CHECK ----------
-triggered_alerts = []
 for alert in st.session_state.alerts:
     row = df[df["Symbol"] == alert["symbol"]]
     if row.empty:
@@ -186,94 +181,61 @@ for alert in st.session_state.alerts:
     except:
         continue
     cond = (val >= alert["threshold"]) if alert["condition"] == ">=" else (val <= alert["threshold"])
-    alert_key = f"{alert['symbol']}-{alert['criteria']}-{alert['threshold']}-{alert['condition']}"
-    if cond and alert_key not in st.session_state.triggered:
-        msg = f"ALERT: {alert['symbol']} {alert['criteria']} {alert['condition']} {alert['threshold']} (current: {val:.2f})"
-        send_telegram_message(msg)
-        st.session_state.triggered.add(alert_key)
-        triggered_alerts.append(msg)
+    if cond:
+        send_telegram_message(f"ALERT: {alert['symbol']} {alert['criteria']} {alert['condition']} {alert['threshold']}")
 
-if triggered_alerts:
-    st.error("Triggered Alerts:\n" + "\n".join(triggered_alerts))
-
-# ---------- STYLING ----------
+# ---------- CSS ----------
 st.markdown("""
 <style>
-.table-cell {
-    white-space: nowrap;
-    font-family: monospace;
-    padding: 4px;
-    text-align: center;
-}
-.symbol-cell {
-    font-weight: bold;
-    padding: 4px;
-    text-align: left;
-    white-space: nowrap;
-}
-.table-header {
-    color: #888;
-    font-weight: bold;
-    font-size: 0.9rem;
-    text-align: center;
-}
+.full-width-table {width: 100%; border-collapse: collapse;}
+.full-width-table th {text-align: center; font-weight: bold; color: #999; padding: 8px;}
+.full-width-table td {text-align: center; font-family: monospace; padding: 8px; white-space: nowrap;}
+.symbol-cell {text-align: left !important; font-weight: bold; font-family: monospace;}
+.alert-btn {background-color: transparent; border: 1px solid #666; border-radius: 6px; padding: 0 8px; font-size: 18px; cursor: pointer; color: #aaa;}
+.alert-btn:hover {background-color: #444;}
 </style>
 """, unsafe_allow_html=True)
 
 # ---------- LAYOUT ----------
-st.title("📊 Delta Exchange Positions")
-
-left_col, right_col = st.columns([3, 1])
-col_widths = [2.5, 1, 1, 1, 1, 1, 1, 0.5]
+left_col, right_col = st.columns([4, 1])
 
 # --- LEFT: TABLE ---
 if not df.empty:
-    header_cols = left_col.columns(col_widths)
-    for i, cname in enumerate(df.columns):
-        align_class = "table-header"
-        if cname == "Symbol":
-            header_cols[i].markdown(f"<div class='{align_class}' style='text-align:left'>{cname.upper()}</div>", unsafe_allow_html=True)
-        else:
-            header_cols[i].markdown(f"<div class='{align_class}'>{cname.upper()}</div>", unsafe_allow_html=True)
-    header_cols[-1].markdown("<div class='table-header'>ALERT</div>", unsafe_allow_html=True)
+    table_html = "<table class='full-width-table'><thead><tr>"
+    for col in df.columns:
+        table_html += f"<th>{col.upper()}</th>"
+    table_html += "<th>ALERT</th></tr></thead><tbody>"
 
     for idx, row in df.iterrows():
-        row_cols = left_col.columns(col_widths)
-        for i, cname in enumerate(df.columns):
-            if cname == "Symbol":
-                row_cols[i].markdown(f"<div class='symbol-cell'>{row[cname]}</div>", unsafe_allow_html=True)
-            elif cname == "UPNL (USD)":
-                row_cols[i].markdown(badge_upnl(row[cname]), unsafe_allow_html=True)
+        table_html += "<tr>"
+        for col in df.columns:
+            if col == "Symbol":
+                table_html += f"<td class='symbol-cell'>{row[col]}</td>"
+            elif col == "UPNL (USD)":
+                table_html += f"<td>{badge_upnl(row[col])}</td>"
             else:
-                row_cols[i].markdown(f"<div class='table-cell'>{row[cname]}</div>", unsafe_allow_html=True)
-        if row_cols[-1].button("➕", key=f"add_alert_{idx}"):
-            st.session_state.edit_symbol = row["Symbol"]
+                table_html += f"<td>{row[col]}</td>"
+        table_html += f"<td><button class='alert-btn' onclick=\"window.location.href='?edit_symbol={row['Symbol']}'\">+</button></td>"
+        table_html += "</tr>"
+
+    table_html += "</tbody></table>"
+    left_col.markdown(table_html, unsafe_allow_html=True)
 
 # --- RIGHT: ALERT EDITOR ---
 if st.session_state.edit_symbol:
-    row = df[df["Symbol"] == st.session_state.edit_symbol].iloc[0]
-    try:
-        upnl_val = float(row["UPNL (USD)"])
-        if upnl_val > 0:
-            header_bg = "#b6f7b0"
-        elif upnl_val < 0:
-            header_bg = "#f7b0b0"
-        else:
-            header_bg = "#ddd"
-    except:
-        header_bg = "#ddd"
-
+    sel_row = df[df["Symbol"] == st.session_state.edit_symbol].iloc[0]
+    upnl_val = float(sel_row["UPNL (USD)"]) if sel_row["UPNL (USD)"] else 0
+    header_bg = "#4CAF50" if upnl_val > 0 else "#F44336" if upnl_val < 0 else "#999"
     right_col.markdown(f"<div style='background:{header_bg};padding:10px;border-radius:8px'><b>Create Alert</b></div>", unsafe_allow_html=True)
     right_col.markdown(f"**Symbol:** {st.session_state.edit_symbol}")
-    right_col.markdown(f"**UPNL (USD):** {badge_upnl(row['UPNL (USD)'])}", unsafe_allow_html=True)
-    right_col.markdown(f"**Mark Price:** {row['Mark Price']}")  # plain text
+    right_col.markdown(f"**UPNL (USD):** {badge_upnl(sel_row['UPNL (USD)'])}", unsafe_allow_html=True)
+    right_col.markdown(f"**Mark Price:** {sel_row['Mark Price']}")
 
     with right_col.form("alert_form"):
         criteria_choice = st.selectbox("Criteria", ["UPNL (USD)", "Mark Price"])
         condition_choice = st.selectbox("Condition", [">=", "<="])
         threshold_value = st.number_input("Threshold", format="%.2f")
-        submitted = st.form_submit_button("Save Alert")
-        if submitted:
+        if st.form_submit_button("Save Alert"):
             st.session_state.alerts.append({
                 "symbol": st.session_state.edit_symbol,
                 "criteria": criteria_choice,
@@ -281,20 +243,18 @@ if st.session_state.edit_symbol:
                 "threshold": threshold_value
             })
             st.session_state.edit_symbol = None
-            st.success("Alert added!")
+            st.experimental_rerun()
 else:
     right_col.info("Select a contract to set an alert")
 
 # --- ACTIVE ALERTS ---
 st.subheader("Active Alerts")
 if st.session_state.alerts:
-    for i, alert in enumerate(list(st.session_state.alerts)):
+    for i, alert in enumerate(st.session_state.alerts):
         cols = st.columns([5, 1])
-        with cols[0]:
-            st.write(alert)
-        with cols[1]:
-            if st.button("❌", key=f"remove_alert_{i}"):
-                st.session_state.alerts.pop(i)
-                st.experimental_rerun()
+        cols[0].write(alert)
+        if cols[1].button("❌", key=f"remove_alert_{i}"):
+            st.session_state.alerts.pop(i)
+            st.experimental_rerun()
 else:
     st.write("No active alerts.")
