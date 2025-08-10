@@ -7,6 +7,7 @@ import re
 import pandas as pd
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
+from supabase import create_client, Client
 
 # Auto-refresh every 3 seconds
 st_autorefresh(interval=3000)
@@ -18,6 +19,12 @@ API_SECRET = st.secrets["DELTA_API_SECRET"]
 BASE_URL = st.secrets.get("DELTA_BASE_URL", "https://api.india.delta.exchange")
 TG_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
+
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+
+# ---------- INIT SUPABASE ----------
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ---------- helpers ----------
 def sign_request(method: str, path: str, payload: str, timestamp: str) -> str:
@@ -158,20 +165,11 @@ for p in positions:
     })
 
 df = pd.DataFrame(rows)
-
-# Sort by absolute UPNL
 df = df.sort_values(by="UPNL (USD)", key=lambda x: x.map(lambda v: abs(float(v)) if v else -999999), ascending=False).reset_index(drop=True)
 
-# ---------- STATE ----------
-if "alerts" not in st.session_state:
-    st.session_state.alerts = []
-if "triggered" not in st.session_state:
-    st.session_state.triggered = set()
-if "edit_symbol" not in st.session_state:
-    st.session_state.edit_symbol = None
-
 # ---------- ALERT CHECK ----------
-for alert in st.session_state.alerts:
+alerts = supabase.table("alerts").select("*").execute().data
+for alert in alerts:
     row = df[df["Symbol"] == alert["symbol"]]
     if row.empty:
         continue
@@ -196,20 +194,18 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Handle button clicks through URL parameters
+# Handle button clicks
 query_params = st.query_params
 if "edit_symbol" in query_params:
-    st.session_state.edit_symbol = query_params["edit_symbol"]
-    # Clear the URL parameter
+    edit_symbol = query_params["edit_symbol"]
     st.query_params.clear()
 elif "delete_alert" in query_params:
     try:
-        alert_index = int(query_params["delete_alert"])
-        if 0 <= alert_index < len(st.session_state.alerts):
-            st.session_state.alerts.pop(alert_index)
+        alert_id = int(query_params["delete_alert"])
+        supabase.table("alerts").delete().eq("id", alert_id).execute()
         st.query_params.clear()
         st.rerun()
-    except (ValueError, IndexError):
+    except:
         st.query_params.clear()
 
 # ---------- LAYOUT ----------
@@ -223,6 +219,7 @@ if not df.empty:
     table_html += "<th>ALERT</th></tr></thead><tbody>"
 
     for idx, row in df.iterrows():
+        symbol_encoded = row['Symbol'].replace(' ', '%20').replace('&', '%26')
         table_html += "<tr>"
         for col in df.columns:
             if col == "Symbol":
@@ -231,27 +228,20 @@ if not df.empty:
                 table_html += f"<td>{badge_upnl(row[col])}</td>"
             else:
                 table_html += f"<td>{row[col]}</td>"
-        
-        # Create clickable + button that updates URL in same tab
-        symbol_encoded = row['Symbol'].replace(' ', '%20').replace('&', '%26')
-        table_html += f"""<td><a href="?edit_symbol={symbol_encoded}" 
-                         target="_self" style="text-decoration: none;">
-                         <span class='alert-btn'>+</span></a></td>"""
-        table_html += "</tr>"
-
+        table_html += f"""<td><a href="?edit_symbol={symbol_encoded}" target="_self" style="text-decoration: none;">
+                         <span class='alert-btn'>+</span></a></td></tr>"""
     table_html += "</tbody></table>"
     left_col.markdown(table_html, unsafe_allow_html=True)
 
 # --- RIGHT: ALERT EDITOR ---
-if st.session_state.edit_symbol:
-    # Find the row for the selected symbol
-    matching_rows = df[df["Symbol"] == st.session_state.edit_symbol]
+if "edit_symbol" in locals() and edit_symbol:
+    matching_rows = df[df["Symbol"] == edit_symbol]
     if not matching_rows.empty:
         sel_row = matching_rows.iloc[0]
         upnl_val = float(sel_row["UPNL (USD)"]) if sel_row["UPNL (USD)"] else 0
         header_bg = "#4CAF50" if upnl_val > 0 else "#F44336" if upnl_val < 0 else "#999"
         right_col.markdown(f"<div style='background:{header_bg};padding:10px;border-radius:8px'><b>Create Alert</b></div>", unsafe_allow_html=True)
-        right_col.markdown(f"**Symbol:** {st.session_state.edit_symbol}")
+        right_col.markdown(f"**Symbol:** {edit_symbol}")
         right_col.markdown(f"**UPNL (USD):** {badge_upnl(sel_row['UPNL (USD)'])}", unsafe_allow_html=True)
         right_col.markdown(f"**Mark Price:** {sel_row['Mark Price']}")
 
@@ -263,39 +253,36 @@ if st.session_state.edit_symbol:
             col1, col2 = st.columns(2)
             with col1:
                 if st.form_submit_button("Save Alert"):
-                    st.session_state.alerts.append({
-                        "symbol": st.session_state.edit_symbol,
+                    supabase.table("alerts").insert({
+                        "symbol": edit_symbol,
                         "criteria": criteria_choice,
                         "condition": condition_choice,
                         "threshold": threshold_value
-                    })
-                    st.session_state.edit_symbol = None
+                    }).execute()
                     st.rerun()
             with col2:
                 if st.form_submit_button("Cancel"):
-                    st.session_state.edit_symbol = None
                     st.rerun()
     else:
         right_col.error("Symbol not found")
-        st.session_state.edit_symbol = None
 else:
     right_col.info("Click + button on any row to create alert")
 
 # --- ACTIVE ALERTS ---
 st.subheader("Active Alerts")
-if st.session_state.alerts:
-    # Create alerts table HTML with simpler structure
+alerts = supabase.table("alerts").select("*").execute().data
+if alerts:
     alerts_html = "<table class='full-width-table'><thead><tr>"
     alerts_html += "<th>SYMBOL</th><th>CRITERIA</th><th>CONDITION</th><th>THRESHOLD</th><th>DELETE</th>"
     alerts_html += "</tr></thead><tbody>"
     
-    for i, alert in enumerate(st.session_state.alerts):
+    for alert in alerts:
         alerts_html += "<tr>"
         alerts_html += f"<td class='symbol-cell'>{alert['symbol']}</td>"
         alerts_html += f"<td>{alert['criteria']}</td>"
         alerts_html += f"<td>{alert['condition']}</td>"
         alerts_html += f"<td>{alert['threshold']}</td>"
-        alerts_html += f"<td><a href='?delete_alert={i}' target='_self' style='text-decoration: none;'><span style='color:#F44336;font-size:18px;cursor:pointer;'>❌</span></a></td>"
+        alerts_html += f"<td><a href='?delete_alert={alert['id']}' target='_self' style='text-decoration: none;'><span style='color:#F44336;font-size:18px;cursor:pointer;'>❌</span></a></td>"
         alerts_html += "</tr>"
     
     alerts_html += "</tbody></table>"
