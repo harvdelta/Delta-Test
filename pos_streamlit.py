@@ -8,7 +8,6 @@ import pandas as pd
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-Auto-refresh every 3 seconds
 st_autorefresh(interval=3000)
 st.set_page_config(layout="wide")
 
