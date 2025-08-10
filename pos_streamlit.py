@@ -284,43 +284,26 @@ else:
 # --- ACTIVE ALERTS ---
 st.subheader("Active Alerts")
 if st.session_state.alerts:
-    # Create alerts table HTML
-    alerts_html = """
-    <table class='full-width-table'>
-        <thead>
-            <tr>
-                <th>SYMBOL</th>
-                <th>CRITERIA</th>
-                <th>CONDITION</th>
-                <th>THRESHOLD</th>
-                <th>STATUS</th>
-                <th>DELETE</th>
-            </tr>
-        </thead>
-        <tbody>
-    """
+    # Create alerts table HTML with simpler structure
+    alerts_html = "<table class='full-width-table'><thead><tr>"
+    alerts_html += "<th>SYMBOL</th><th>CRITERIA</th><th>CONDITION</th><th>THRESHOLD</th><th>STATUS</th><th>DELETE</th>"
+    alerts_html += "</tr></thead><tbody>"
     
     for i, alert in enumerate(st.session_state.alerts):
         status = "TRIGGERED" if alert.get("triggered", False) else "ACTIVE"
         status_color = "#F44336" if alert.get("triggered", False) else "#4CAF50"
         status_badge = f"<span style='padding:4px 8px;border-radius:6px;background:{status_color};color:white;font-weight:bold;'>{status}</span>"
         
-        alerts_html += f"""
-        <tr>
-            <td class='symbol-cell'>{alert['symbol']}</td>
-            <td>{alert['criteria']}</td>
-            <td>{alert['condition']}</td>
-            <td>{alert['threshold']}</td>
-            <td>{status_badge}</td>
-            <td><a href="?delete_alert={i}" target="_self" style="text-decoration: none;"><span style="color:#F44336;font-size:18px;cursor:pointer;">❌</span></a></td>
-        </tr>
-        """
+        alerts_html += "<tr>"
+        alerts_html += f"<td class='symbol-cell'>{alert['symbol']}</td>"
+        alerts_html += f"<td>{alert['criteria']}</td>"
+        alerts_html += f"<td>{alert['condition']}</td>"
+        alerts_html += f"<td>{alert['threshold']}</td>"
+        alerts_html += f"<td>{status_badge}</td>"
+        alerts_html += f"<td><a href='?delete_alert={i}' target='_self' style='text-decoration: none;'><span style='color:#F44336;font-size:18px;cursor:pointer;'>❌</span></a></td>"
+        alerts_html += "</tr>"
     
-    alerts_html += """
-        </tbody>
-    </table>
-    """
-    
+    alerts_html += "</tbody></table>"
     st.markdown(alerts_html, unsafe_allow_html=True)
 else:
     st.write("No active alerts.")
