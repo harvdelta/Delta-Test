@@ -4,5 +4,4 @@ streamlit
 streamlit-autorefresh
 pandas
 requests
-supabase-py
 
