@@ -191,6 +191,8 @@ st.markdown("""
 .full-width-table th {text-align: center; font-weight: bold; color: #999; padding: 8px;}
 .full-width-table td {text-align: center; font-family: monospace; padding: 8px; white-space: nowrap;}
 .symbol-cell {text-align: left !important; font-weight: bold; font-family: monospace;}
+.alert-btn {background-color: transparent; border: 1px solid #666; border-radius: 6px; padding: 0 8px; font-size: 18px; cursor: pointer; color: #aaa;}
+.alert-btn:hover {background-color: #444;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -199,34 +201,25 @@ left_col, right_col = st.columns([4, 1])
 
 # --- LEFT: TABLE ---
 if not df.empty:
-    # Add table headers
-    header_cols = left_col.columns([0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.2])
-    header_cols[0].markdown("**SYMBOL**")
-    header_cols[1].markdown("**SIZE (LOTS)**")
-    header_cols[2].markdown("**SIZE (COINS)**") 
-    header_cols[3].markdown("**ENTRY PRICE**")
-    header_cols[4].markdown("**INDEX PRICE**")
-    header_cols[5].markdown("**MARK PRICE**")
-    header_cols[6].markdown("**UPNL (USD)**")
-    header_cols[7].markdown("**ALERT**")
-    
-    # Create clickable + buttons for each row using columns
+    table_html = "<table class='full-width-table'><thead><tr>"
+    for col in df.columns:
+        table_html += f"<th>{col.upper()}</th>"
+    table_html += "<th>ALERT</th></tr></thead><tbody>"
+
     for idx, row in df.iterrows():
-        cols = left_col.columns([0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.2])
-        
-        # Display data in monospace font to match original style
-        cols[0].markdown(f"<div style='font-family:monospace;font-weight:bold;'>{row['Symbol']}</div>", unsafe_allow_html=True)
-        cols[1].markdown(f"<div style='font-family:monospace;text-align:center;'>{row['Size (lots)']}</div>", unsafe_allow_html=True)
-        cols[2].markdown(f"<div style='font-family:monospace;text-align:center;'>{row['Size (coins)']}</div>", unsafe_allow_html=True)
-        cols[3].markdown(f"<div style='font-family:monospace;text-align:center;'>{row['Entry Price']}</div>", unsafe_allow_html=True)
-        cols[4].markdown(f"<div style='font-family:monospace;text-align:center;'>{row['Index Price']}</div>", unsafe_allow_html=True)
-        cols[5].markdown(f"<div style='font-family:monospace;text-align:center;'>{row['Mark Price']}</div>", unsafe_allow_html=True)
-        cols[6].markdown(f"<div style='font-family:monospace;text-align:center;'>{badge_upnl(row['UPNL (USD)'])}</div>", unsafe_allow_html=True)
-        
-        # Functional + button
-        if cols[7].button("+", key=f"alert_btn_{idx}"):
-            st.session_state.edit_symbol = row['Symbol']
-            st.rerun()
+        table_html += "<tr>"
+        for col in df.columns:
+            if col == "Symbol":
+                table_html += f"<td class='symbol-cell'>{row[col]}</td>"
+            elif col == "UPNL (USD)":
+                table_html += f"<td>{badge_upnl(row[col])}</td>"
+            else:
+                table_html += f"<td>{row[col]}</td>"
+        table_html += f"<td><button class='alert-btn' onclick=\"window.location.href='?edit_symbol={row['Symbol']}'\">+</button></td>"
+        table_html += "</tr>"
+
+    table_html += "</tbody></table>"
+    left_col.markdown(table_html, unsafe_allow_html=True)
 
 # --- RIGHT: ALERT EDITOR ---
 if st.session_state.edit_symbol:
@@ -242,8 +235,7 @@ if st.session_state.edit_symbol:
         criteria_choice = st.selectbox("Criteria", ["UPNL (USD)", "Mark Price"])
         condition_choice = st.selectbox("Condition", [">=", "<="])
         threshold_value = st.number_input("Threshold", format="%.2f")
-        col1, col2 = st.columns(2)
-        if col1.form_submit_button("Save Alert"):
+        if st.form_submit_button("Save Alert"):
             st.session_state.alerts.append({
                 "symbol": st.session_state.edit_symbol,
                 "criteria": criteria_choice,
@@ -251,10 +243,7 @@ if st.session_state.edit_symbol:
                 "threshold": threshold_value
             })
             st.session_state.edit_symbol = None
-            st.rerun()
-        if col2.form_submit_button("Cancel"):
-            st.session_state.edit_symbol = None
-            st.rerun()
+            st.experimental_rerun()
 else:
     right_col.info("Select a contract to set an alert")
 
@@ -266,6 +255,6 @@ if st.session_state.alerts:
         cols[0].write(alert)
         if cols[1].button("❌", key=f"remove_alert_{i}"):
             st.session_state.alerts.pop(i)
-            st.rerun()
+            st.experimental_rerun()
 else:
     st.write("No active alerts.")
