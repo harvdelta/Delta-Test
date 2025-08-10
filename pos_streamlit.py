@@ -161,10 +161,27 @@ if "alerts" not in st.session_state:
 if "triggered" not in st.session_state:
     st.session_state.triggered = set()
 
-contract_choice = st.sidebar.selectbox("Contract", df["Symbol"].unique())
-criteria_choice = st.sidebar.selectbox("Criteria", ["UPNL (USD)", "Mark Price"])
-condition_choice = st.sidebar.selectbox("Condition", [">=", "<="])
-threshold_value = st.sidebar.number_input("Threshold", format="%.2f")
+# Prefilled values when Add Alert button clicked in main table
+contract_choice = st.sidebar.selectbox(
+    "Contract",
+    df["Symbol"].unique(),
+    index=list(df["Symbol"].unique()).index(st.session_state.get("prefill_symbol", df["Symbol"].iloc[0]))
+)
+criteria_choice = st.sidebar.selectbox(
+    "Criteria",
+    ["UPNL (USD)", "Mark Price"],
+    index=0 if st.session_state.get("prefill_criteria") == "UPNL (USD)" else 1
+)
+condition_choice = st.sidebar.selectbox(
+    "Condition",
+    [">=", "<="],
+    index=0 if st.session_state.get("prefill_condition") == ">=" else 1
+)
+threshold_value = st.sidebar.number_input(
+    "Threshold",
+    format="%.2f",
+    value=st.session_state.get("prefill_threshold", 0.0)
+)
 
 if st.sidebar.button("Add Alert"):
     st.session_state.alerts.append({
@@ -174,12 +191,9 @@ if st.sidebar.button("Add Alert"):
         "threshold": threshold_value
     })
     st.sidebar.success(f"Alert added for {contract_choice}")
-
-# ---------- DISPLAY ACTIVE ALERTS ----------
-if st.session_state.alerts:
-    active_alerts_df = pd.DataFrame(st.session_state.alerts)
-    st.sidebar.subheader("Active Alerts")
-    st.sidebar.dataframe(active_alerts_df)
+    # Clear prefill
+    for k in ["prefill_symbol", "prefill_criteria", "prefill_condition", "prefill_threshold"]:
+        st.session_state.pop(k, None)
 
 # ---------- CHECK ALERTS ----------
 triggered_alerts = []
@@ -203,7 +217,7 @@ for alert in st.session_state.alerts:
 if triggered_alerts:
     st.error("Triggered Alerts:\n" + "\n".join(triggered_alerts))
 
-# ---------- DISPLAY TABLE ----------
+# ---------- DISPLAY TABLE WITH ALERT BUTTON ----------
 def color_pnl(val):
     try:
         num = float(val)
@@ -216,4 +230,30 @@ def color_pnl(val):
     return ""
 
 st.title("Delta Exchange Positions (Auto-refresh every 3s, Alerts Enabled)")
+
+# Show table with Add Alert buttons
+for idx, row in df.iterrows():
+    cols = st.columns([4, 1])
+    with cols[0]:
+        st.write(row.to_dict())
+    with cols[1]:
+        if st.button("➕ Alert", key=f"add_alert_{idx}"):
+            st.session_state["prefill_symbol"] = row["Symbol"]
+            st.session_state["prefill_criteria"] = "UPNL (USD)"
+            st.session_state["prefill_condition"] = ">="
+            st.session_state["prefill_threshold"] = 0.0
+            st.sidebar.info(f"Pre-filled alert form for {row['Symbol']}")
+
 st.dataframe(df.style.applymap(color_pnl, subset=["UPNL (USD)"]))
+
+# ---------- ACTIVE ALERTS MAIN AREA ----------
+if st.session_state.alerts:
+    st.subheader("Active Alerts")
+    for i, alert in enumerate(st.session_state.alerts):
+        cols = st.columns([5, 1])
+        with cols[0]:
+            st.write(alert)
+        with cols[1]:
+            if st.button("❌ Remove", key=f"remove_alert_{i}"):
+                st.session_state.alerts.pop(i)
+                st.experimental_rerun()
