@@ -1,25 +1,32 @@
-import os
 import time
 import hmac
 import hashlib
 import requests
-import re
 import pandas as pd
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
+import json
 
-# Auto-refresh every 3 seconds
-st_autorefresh(interval=3000)
-st.set_page_config(layout="wide")
+# Google Sheets imports
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
 
-# ---------- CONFIG ----------
+# ----------------- CONFIG -----------------
+
+# Load secrets
 API_KEY = st.secrets["DELTA_API_KEY"]
 API_SECRET = st.secrets["DELTA_API_SECRET"]
 BASE_URL = st.secrets.get("DELTA_BASE_URL", "https://api.india.delta.exchange")
 TG_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
 
-# ---------- helpers ----------
+# Google Sheets config
+GCP_SA_INFO = st.secrets["gcp_service_account"]
+# Put your Google Sheet ID here (you must share the sheet with the service account email)
+GOOGLE_SHEET_ID = "1fb_qf6r01flTn6KKu15dkNr2aW-dhbhFr6kDKLkLqA8"
+
+# ----------------- HELPERS -----------------
+
 def sign_request(method: str, path: str, payload: str, timestamp: str) -> str:
     sig_data = method + timestamp + path + payload
     return hmac.new(API_SECRET.encode(), sig_data.encode(), hashlib.sha256).hexdigest()
@@ -46,34 +53,6 @@ def to_float(x):
     except (TypeError, ValueError):
         return None
 
-def detect_underlying(product: dict, fallback_symbol: str):
-    if not isinstance(product, dict):
-        product = {}
-    for key in ("underlying_symbol", "underlying", "base_asset_symbol", "settlement_asset_symbol"):
-        val = product.get(key)
-        if isinstance(val, str):
-            v = val.upper()
-            if "BTC" in v:
-                return "BTC"
-            if "ETH" in v:
-                return "ETH"
-    spot = product.get("spot_index") or {}
-    if isinstance(spot, dict):
-        s = (spot.get("symbol") or "").upper()
-        if "BTC" in s:
-            return "BTC"
-        if "ETH" in s:
-            return "ETH"
-    txt = (fallback_symbol or "").upper()
-    m = re.search(r"\b(BTC|ETH)\b", txt)
-    if m:
-        return m.group(1)
-    if "BTC" in txt:
-        return "BTC"
-    if "ETH" in txt:
-        return "ETH"
-    return None
-
 def send_telegram_message(text):
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         return
@@ -96,82 +75,93 @@ def badge_upnl(val):
     else:
         return f"<span style='padding:4px 8px;border-radius:6px;background:#999;color:white;font-weight:bold;'>{num:.2f}</span>"
 
-# ---------- fetch data ----------
-positions_j = api_get("/v2/positions/margined")
-positions = positions_j.get("result", []) if isinstance(positions_j, dict) else []
+# ----------------- GOOGLE SHEETS -----------------
 
-tickers_j = api_get("/v2/tickers")
-tickers = tickers_j.get("result", []) if isinstance(tickers_j, dict) else []
+def get_sheets_service():
+    creds = Credentials.from_service_account_info(GCP_SA_INFO, scopes=["https://www.googleapis.com/auth/spreadsheets"])
+    service = build('sheets', 'v4', credentials=creds)
+    return service.spreadsheets()
 
-# ---------- BTC/ETH index map ----------
-index_map = {}
-for t in tickers:
-    sym = (t.get("symbol") or "").upper()
-    price = t.get("index_price") or t.get("spot_price") or t.get("last_traded_price") or t.get("mark_price")
-    price = to_float(price)
-    if not price:
-        continue
-    if "BTC" in sym and "USD" in sym and "BTC" not in index_map:
-        index_map["BTC"] = price
-    if "ETH" in sym and "USD" in sym and "ETH" not in index_map:
-        index_map["ETH"] = price
+def load_alerts():
+    try:
+        sheets = get_sheets_service()
+        result = sheets.values().get(spreadsheetId=GOOGLE_SHEET_ID, range="alerts!A2:D").execute()
+        values = result.get('values', [])
+        alerts = []
+        for row in values:
+            if len(row) < 4:
+                continue
+            alerts.append({
+                "symbol": row[0],
+                "criteria": row[1],
+                "condition": row[2],
+                "threshold": float(row[3])
+            })
+        return alerts
+    except Exception as e:
+        st.error(f"Error loading alerts from Google Sheets: {e}")
+        return []
 
-# ---------- process positions ----------
+def save_alerts(alerts):
+    try:
+        sheets = get_sheets_service()
+        values = [[a["symbol"], a["criteria"], a["condition"], a["threshold"]] for a in alerts]
+        # Clear sheet first
+        sheets.values().clear(spreadsheetId=GOOGLE_SHEET_ID, range="alerts!A2:D").execute()
+        if values:
+            sheets.values().update(
+                spreadsheetId=GOOGLE_SHEET_ID,
+                range="alerts!A2:D",
+                valueInputOption="USER_ENTERED",
+                body={"values": values}
+            ).execute()
+    except Exception as e:
+        st.error(f"Error saving alerts to Google Sheets: {e}")
+
+# ----------------- MAIN -----------------
+
+st.set_page_config(layout="wide")
+st_autorefresh(interval=3000, key="auto_refresh")  # refresh every 3 seconds
+
+# Load alerts from Google Sheets or initialize empty
+if "alerts" not in st.session_state:
+    st.session_state.alerts = load_alerts()
+
+# Fetch positions data
+try:
+    positions_j = api_get("/v2/positions/margined")
+    positions = positions_j.get("result", []) if isinstance(positions_j, dict) else []
+except Exception as e:
+    st.error(f"Error fetching positions: {e}")
+    positions = []
+
+# Process positions into DataFrame
 rows = []
 for p in positions:
     product = p.get("product") or {}
     contract_symbol = product.get("symbol") or p.get("symbol") or ""
     size_lots = to_float(p.get("size"))
-    underlying = detect_underlying(product, contract_symbol)
-
     entry_price = to_float(p.get("entry_price"))
     mark_price = to_float(p.get("mark_price"))
 
-    index_price = p.get("index_price") or product.get("index_price")
-    if isinstance(index_price, dict):
-        index_price = index_price.get("index_price") or index_price.get("price")
-    if index_price is None and isinstance(product.get("spot_index"), dict):
-        index_price = product["spot_index"].get("index_price") or product["spot_index"].get("spot_price")
-    if index_price is None and underlying and underlying in index_map:
-        index_price = index_map[underlying]
-    index_price = to_float(index_price)
-
     upnl_val = None
-    size_coins = None
-    if size_lots is not None and underlying:
-        lots_per_coin = {"BTC": 1000.0, "ETH": 100.0}.get(underlying, 1.0)
-        size_coins = size_lots / lots_per_coin
-    if entry_price is not None and mark_price is not None and size_coins is not None:
-        if size_coins < 0:
-            upnl_val = (entry_price - mark_price) * abs(size_coins)
-        else:
-            upnl_val = (mark_price - entry_price) * abs(size_coins)
+    if size_lots is not None and entry_price is not None and mark_price is not None:
+        upnl_val = (mark_price - entry_price) * abs(size_lots)
 
     rows.append({
         "Symbol": contract_symbol,
         "Size (lots)": f"{size_lots:.0f}" if size_lots is not None else None,
-        "Size (coins)": f"{size_coins:.2f}" if size_coins is not None else None,
         "Entry Price": f"{entry_price:.2f}" if entry_price is not None else None,
-        "Index Price": f"{index_price:.2f}" if index_price is not None else None,
         "Mark Price": f"{mark_price:.2f}" if mark_price is not None else None,
         "UPNL (USD)": f"{upnl_val:.2f}" if upnl_val is not None else None
     })
 
 df = pd.DataFrame(rows)
-
-# Sort by absolute UPNL
 df = df.sort_values(by="UPNL (USD)", key=lambda x: x.map(lambda v: abs(float(v)) if v else -999999), ascending=False).reset_index(drop=True)
 
-# ---------- STATE ----------
-if "alerts" not in st.session_state:
-    st.session_state.alerts = []
-if "triggered" not in st.session_state:
-    st.session_state.triggered = set()
-if "edit_symbol" not in st.session_state:
-    st.session_state.edit_symbol = None
-
-# ---------- ALERT CHECK (fixed to avoid repeats) ----------
-for alert in st.session_state.alerts:
+# Alert checking & removing triggered alerts
+triggered_indices = []
+for i, alert in enumerate(st.session_state.alerts):
     row = df[df["Symbol"] == alert["symbol"]]
     if row.empty:
         continue
@@ -180,126 +170,117 @@ for alert in st.session_state.alerts:
         val = float(val_str)
     except:
         continue
-
     cond = (val >= alert["threshold"]) if alert["condition"] == ">=" else (val <= alert["threshold"])
-    alert_id = f"{alert['symbol']}-{alert['criteria']}-{alert['condition']}-{alert['threshold']}"
-
-    if cond and alert_id not in st.session_state.triggered:
+    if cond:
         send_telegram_message(f"ALERT: {alert['symbol']} {alert['criteria']} {alert['condition']} {alert['threshold']}")
-        st.session_state.triggered.add(alert_id)
+        triggered_indices.append(i)
 
-    if not cond and alert_id in st.session_state.triggered:
-        st.session_state.triggered.remove(alert_id)
+# Remove triggered alerts
+if triggered_indices:
+    st.session_state.alerts = [a for i, a in enumerate(st.session_state.alerts) if i not in triggered_indices]
+    save_alerts(st.session_state.alerts)
 
-# ---------- CSS ----------
-st.markdown("""
-<style>
-.full-width-table {width: 100%; border-collapse: collapse;}
-.full-width-table th {text-align: center; font-weight: bold; color: #999; padding: 8px;}
-.full-width-table td {text-align: center; font-family: monospace; padding: 8px; white-space: nowrap;}
-.symbol-cell {text-align: left !important; font-weight: bold; font-family: monospace;}
-.alert-btn {background-color: transparent; border: 1px solid #666; border-radius: 6px; padding: 0 8px; font-size: 18px; cursor: pointer; color: #aaa;}
-.alert-btn:hover {background-color: #444;}
-</style>
-""", unsafe_allow_html=True)
-
-# Handle button clicks through URL parameters
-query_params = st.query_params
-if "edit_symbol" in query_params:
-    st.session_state.edit_symbol = query_params["edit_symbol"]
-    st.query_params.clear()
-elif "delete_alert" in query_params:
-    try:
-        alert_index = int(query_params["delete_alert"])
-        if 0 <= alert_index < len(st.session_state.alerts):
-            st.session_state.alerts.pop(alert_index)
-        st.query_params.clear()
-        st.rerun()
-    except (ValueError, IndexError):
-        st.query_params.clear()
-
-# ---------- LAYOUT ----------
+# UI layout
 left_col, right_col = st.columns([4, 1])
 
-# --- LEFT: TABLE ---
+# Left: positions table with alert button
 if not df.empty:
-    table_html = "<table class='full-width-table'><thead><tr>"
+    table_html = "<table style='width:100%;border-collapse:collapse'>"
+    table_html += "<thead><tr>"
     for col in df.columns:
-        table_html += f"<th>{col.upper()}</th>"
-    table_html += "<th>ALERT</th></tr></thead><tbody>"
-
+        table_html += f"<th style='padding:8px;border-bottom:1px solid #ccc;text-align:center'>{col}</th>"
+    table_html += "<th>Alert</th></tr></thead><tbody>"
     for idx, row in df.iterrows():
         table_html += "<tr>"
         for col in df.columns:
+            val = row[col]
             if col == "Symbol":
-                table_html += f"<td class='symbol-cell'>{row[col]}</td>"
+                table_html += f"<td style='text-align:left;font-weight:bold'>{val}</td>"
             elif col == "UPNL (USD)":
-                table_html += f"<td>{badge_upnl(row[col])}</td>"
+                badge = badge_upnl(val)
+                table_html += f"<td style='text-align:center'>{badge}</td>"
             else:
-                table_html += f"<td>{row[col]}</td>"
+                table_html += f"<td style='text-align:center'>{val}</td>"
+        # Alert + button link
         symbol_encoded = row['Symbol'].replace(' ', '%20').replace('&', '%26')
-        table_html += f"""<td><a href="?edit_symbol={symbol_encoded}" target="_self" style="text-decoration: none;">
-                         <span class='alert-btn'>+</span></a></td>"""
+        table_html += f"<td style='text-align:center'><a href='?edit_symbol={symbol_encoded}' style='text-decoration:none;font-weight:bold;font-size:20px'>+</a></td>"
         table_html += "</tr>"
-
     table_html += "</tbody></table>"
     left_col.markdown(table_html, unsafe_allow_html=True)
+else:
+    left_col.info("No positions data available")
 
-# --- RIGHT: ALERT EDITOR ---
-if st.session_state.edit_symbol:
-    matching_rows = df[df["Symbol"] == st.session_state.edit_symbol]
-    if not matching_rows.empty:
-        sel_row = matching_rows.iloc[0]
-        upnl_val = float(sel_row["UPNL (USD)"]) if sel_row["UPNL (USD)"] else 0
+# Right: alert editor
+query_params = st.experimental_get_query_params()
+if "edit_symbol" in query_params:
+    edit_symbol = query_params["edit_symbol"][0]
+    st.experimental_set_query_params()  # clear query params
+else:
+    edit_symbol = None
+
+if edit_symbol:
+    row = df[df["Symbol"] == edit_symbol]
+    if not row.empty:
+        row = row.iloc[0]
+        upnl_val = float(row["UPNL (USD)"]) if row["UPNL (USD)"] else 0
         header_bg = "#4CAF50" if upnl_val > 0 else "#F44336" if upnl_val < 0 else "#999"
         right_col.markdown(f"<div style='background:{header_bg};padding:10px;border-radius:8px'><b>Create Alert</b></div>", unsafe_allow_html=True)
-        right_col.markdown(f"**Symbol:** {st.session_state.edit_symbol}")
-        right_col.markdown(f"**UPNL (USD):** {badge_upnl(sel_row['UPNL (USD)'])}", unsafe_allow_html=True)
-        right_col.markdown(f"**Mark Price:** {sel_row['Mark Price']}")
+        right_col.markdown(f"**Symbol:** {edit_symbol}")
+        right_col.markdown(f"**UPNL (USD):** {badge_upnl(row['UPNL (USD)'])}", unsafe_allow_html=True)
+        right_col.markdown(f"**Mark Price:** {row['Mark Price']}")
 
         with right_col.form("alert_form"):
             criteria_choice = st.selectbox("Criteria", ["UPNL (USD)", "Mark Price"])
             condition_choice = st.selectbox("Condition", [">=", "<="])
             threshold_value = st.number_input("Threshold", format="%.2f")
-            
             col1, col2 = st.columns(2)
             with col1:
                 if st.form_submit_button("Save Alert"):
                     st.session_state.alerts.append({
-                        "symbol": st.session_state.edit_symbol,
+                        "symbol": edit_symbol,
                         "criteria": criteria_choice,
                         "condition": condition_choice,
                         "threshold": threshold_value
                     })
-                    st.session_state.edit_symbol = None
-                    st.rerun()
+                    save_alerts(st.session_state.alerts)
+                    st.experimental_set_query_params()
+                    st.experimental_rerun()
             with col2:
                 if st.form_submit_button("Cancel"):
-                    st.session_state.edit_symbol = None
-                    st.rerun()
+                    st.experimental_set_query_params()
+                    st.experimental_rerun()
     else:
         right_col.error("Symbol not found")
-        st.session_state.edit_symbol = None
 else:
-    right_col.info("Click + button on any row to create alert")
+    right_col.info("Click + button to create alert")
 
-# --- ACTIVE ALERTS ---
+# Active alerts table
 st.subheader("Active Alerts")
 if st.session_state.alerts:
-    alerts_html = "<table class='full-width-table'><thead><tr>"
-    alerts_html += "<th>SYMBOL</th><th>CRITERIA</th><th>CONDITION</th><th>THRESHOLD</th><th>DELETE</th>"
-    alerts_html += "</tr></thead><tbody>"
-    
+    alerts_html = "<table style='width:100%;border-collapse:collapse'>"
+    alerts_html += "<thead><tr><th>Symbol</th><th>Criteria</th><th>Condition</th><th>Threshold</th><th>Delete</th></tr></thead><tbody>"
     for i, alert in enumerate(st.session_state.alerts):
         alerts_html += "<tr>"
-        alerts_html += f"<td class='symbol-cell'>{alert['symbol']}</td>"
+        alerts_html += f"<td style='font-weight:bold'>{alert['symbol']}</td>"
         alerts_html += f"<td>{alert['criteria']}</td>"
         alerts_html += f"<td>{alert['condition']}</td>"
         alerts_html += f"<td>{alert['threshold']}</td>"
-        alerts_html += f"<td><a href='?delete_alert={i}' target='_self' style='text-decoration: none;'><span style='color:#F44336;font-size:18px;cursor:pointer;'>❌</span></a></td>"
+        alerts_html += f"<td><button onclick='window.location.href=\"?delete_alert={i}\"' style='color:red;cursor:pointer;border:none;background:none;font-size:18px;'>❌</button></td>"
         alerts_html += "</tr>"
-    
     alerts_html += "</tbody></table>"
     st.markdown(alerts_html, unsafe_allow_html=True)
 else:
     st.write("No active alerts.")
+
+# Delete alert logic
+if "delete_alert" in query_params:
+    try:
+        del_i = int(query_params["delete_alert"][0])
+        if 0 <= del_i < len(st.session_state.alerts):
+            st.session_state.alerts.pop(del_i)
+            save_alerts(st.session_state.alerts)
+        st.experimental_set_query_params()
+        st.experimental_rerun()
+    except:
+        st.experimental_set_query_params()
+        st.experimental_rerun()
