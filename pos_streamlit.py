@@ -87,34 +87,26 @@ def badge_upnl(val):
     try:
         num = float(val)
     except:
-        return f"<span style='padding:4px 8px;border-radius:6px;background:#ccc;color:#000;'>{val}</span>"
+        return val
     if num > 0:
-        bg = "#b6f7b0"
-        color = "#065f08"
+        return f"<span style='padding:4px 8px;border-radius:6px;background:#b6f7b0;color:#065f08;font-weight:bold;'>{num:.2f}</span>"
     elif num < 0:
-        bg = "#f7b0b0"
-        color = "#6b0000"
+        return f"<span style='padding:4px 8px;border-radius:6px;background:#f7b0b0;color:#6b0000;font-weight:bold;'>{num:.2f}</span>"
     else:
-        bg = "#ddd"
-        color = "#000"
-    return f"<span style='padding:4px 8px;border-radius:6px;background:{bg};color:{color};font-weight:bold;'>{num:.2f}</span>"
+        return f"<span style='padding:4px 8px;border-radius:6px;background:#ddd;color:#000;font-weight:bold;'>{num:.2f}</span>"
 
 def badge_price(mark, entry):
     try:
         m = float(mark)
         e = float(entry)
     except:
-        return f"<span style='padding:4px 8px;border-radius:6px;background:#ccc;color:#000;'>{mark}</span>"
+        return mark
     if m > e:
-        bg = "#b6f7b0"
-        color = "#065f08"
+        return f"<span style='padding:4px 8px;border-radius:6px;background:#b6f7b0;color:#065f08;font-weight:bold;'>{m:.2f}</span>"
     elif m < e:
-        bg = "#f7b0b0"
-        color = "#6b0000"
+        return f"<span style='padding:4px 8px;border-radius:6px;background:#f7b0b0;color:#6b0000;font-weight:bold;'>{m:.2f}</span>"
     else:
-        bg = "#ddd"
-        color = "#000"
-    return f"<span style='padding:4px 8px;border-radius:6px;background:{bg};color:{color};font-weight:bold;'>{m:.2f}</span>"
+        return f"<span style='padding:4px 8px;border-radius:6px;background:#ddd;color:#000;font-weight:bold;'>{m:.2f}</span>"
 
 # ---------- fetch data ----------
 positions_j = api_get("/v2/positions/margined")
@@ -181,6 +173,14 @@ for p in positions:
 
 df = pd.DataFrame(rows)
 
+# ---------- sort by absolute UPNL ----------
+def safe_abs_upnl(val):
+    try:
+        return abs(float(val))
+    except:
+        return -999999  # push invalid to bottom
+df = df.sort_values(by="UPNL (USD)", key=lambda x: x.map(safe_abs_upnl), ascending=False).reset_index(drop=True)
+
 # ---------- STATE ----------
 if "alerts" not in st.session_state:
     st.session_state.alerts = []
@@ -221,11 +221,10 @@ if not df.empty:
     col_count = len(df.columns) + 1
     header_cols = left_col.columns([1] * col_count)
     for i, cname in enumerate(df.columns):
-        header_cols[i].markdown(f"<b>{cname}</b>", unsafe_allow_html=True)
+        header_cols[i].markdown(f"**{cname}**")
     header_cols[-1].markdown("**Alert**")
 
     for idx, row in df.iterrows():
-        row_style = "background-color:#f9f9f9;" if idx % 2 == 0 else "background-color:#ffffff;"
         row_cols = left_col.columns([1] * col_count)
         for i, cname in enumerate(df.columns):
             if cname == "UPNL (USD)":
@@ -233,7 +232,7 @@ if not df.empty:
             elif cname == "Mark Price":
                 row_cols[i].markdown(badge_price(row["Mark Price"], row["Entry Price"]), unsafe_allow_html=True)
             else:
-                row_cols[i].markdown(f"<div style='{row_style}padding:4px'>{row[cname]}</div>", unsafe_allow_html=True)
+                row_cols[i].write(row[cname])
         if row_cols[-1].button("➕", key=f"add_alert_{idx}"):
             st.session_state.edit_symbol = row["Symbol"]
 
