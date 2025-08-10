@@ -4,3 +4,9 @@ requests
 streamlit-autorefresh
 google-auth
 google-api-python-client
+
+google-auth-oauthlib
+google-auth-httplib2
+google-auth-transport-requests
+cachetools
+
