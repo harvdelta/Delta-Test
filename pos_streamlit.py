@@ -167,10 +167,8 @@ if "alerts" not in st.session_state:
     st.session_state.alerts = []
 if "triggered" not in st.session_state:
     st.session_state.triggered = set()
-if "show_popup" not in st.session_state:
-    st.session_state.show_popup = False
-if "popup_symbol" not in st.session_state:
-    st.session_state.popup_symbol = None
+if "edit_symbol" not in st.session_state:
+    st.session_state.edit_symbol = None
 
 # ---------- ALERT CHECK ----------
 for alert in st.session_state.alerts:
@@ -195,41 +193,15 @@ st.markdown("""
 .symbol-cell {text-align: left !important; font-weight: bold; font-family: monospace;}
 .alert-btn {background-color: transparent; border: 1px solid #666; border-radius: 6px; padding: 0 8px; font-size: 18px; cursor: pointer; color: #aaa;}
 .alert-btn:hover {background-color: #444;}
-
-/* Modal styles */
-.modal {
-    position: fixed;
-    z-index: 9999;
-    left: 0;
-    top: 0;
-    width: 100%;
-    height: 100%;
-    background-color: rgba(0,0,0,0.5);
-    display: flex;
-    justify-content: center;
-    align-items: center;
-}
-.modal-content {
-    background-color: #1e1e1e;
-    padding: 20px;
-    border-radius: 10px;
-    width: 400px;
-    color: white;
-    position: relative;
-}
-.close {
-    position: absolute;
-    right: 10px;
-    top: 10px;
-    font-size: 24px;
-    cursor: pointer;
-    color: #aaa;
-}
-.close:hover {
-    color: white;
-}
 </style>
 """, unsafe_allow_html=True)
+
+# Handle button clicks through URL parameters
+query_params = st.query_params
+if "edit_symbol" in query_params:
+    st.session_state.edit_symbol = query_params["edit_symbol"]
+    # Clear the URL parameter
+    st.query_params.clear()
 
 # ---------- LAYOUT ----------
 left_col, right_col = st.columns([4, 1])
@@ -250,72 +222,55 @@ if not df.empty:
                 table_html += f"<td>{badge_upnl(row[col])}</td>"
             else:
                 table_html += f"<td>{row[col]}</td>"
-        # Create unique button for each row
-        button_key = f"alert_btn_{idx}_{row['Symbol']}"
-        table_html += f"<td><div id='{button_key}'>+</div></td>"
+        
+        # Create clickable + button that updates URL
+        symbol_encoded = row['Symbol'].replace(' ', '%20').replace('&', '%26')
+        table_html += f"""<td><a href="?edit_symbol={symbol_encoded}" 
+                         style="text-decoration: none;">
+                         <span class='alert-btn'>+</span></a></td>"""
         table_html += "</tr>"
 
     table_html += "</tbody></table>"
     left_col.markdown(table_html, unsafe_allow_html=True)
 
-    # Create buttons for each row using Streamlit columns
-    for idx, row in df.iterrows():
-        button_key = f"alert_btn_{idx}"
-        if st.button(f"Alert for {row['Symbol']}", key=button_key, help="Create Alert"):
-            st.session_state.show_popup = True
-            st.session_state.popup_symbol = row['Symbol']
-            st.rerun()
+# --- RIGHT: ALERT EDITOR ---
+if st.session_state.edit_symbol:
+    # Find the row for the selected symbol
+    matching_rows = df[df["Symbol"] == st.session_state.edit_symbol]
+    if not matching_rows.empty:
+        sel_row = matching_rows.iloc[0]
+        upnl_val = float(sel_row["UPNL (USD)"]) if sel_row["UPNL (USD)"] else 0
+        header_bg = "#4CAF50" if upnl_val > 0 else "#F44336" if upnl_val < 0 else "#999"
+        right_col.markdown(f"<div style='background:{header_bg};padding:10px;border-radius:8px'><b>Create Alert</b></div>", unsafe_allow_html=True)
+        right_col.markdown(f"**Symbol:** {st.session_state.edit_symbol}")
+        right_col.markdown(f"**UPNL (USD):** {badge_upnl(sel_row['UPNL (USD)'])}", unsafe_allow_html=True)
+        right_col.markdown(f"**Mark Price:** {sel_row['Mark Price']}")
 
-# --- POPUP MODAL ---
-if st.session_state.show_popup and st.session_state.popup_symbol:
-    # Find the row data for the popup
-    popup_row = df[df["Symbol"] == st.session_state.popup_symbol].iloc[0]
-    upnl_val = float(popup_row["UPNL (USD)"]) if popup_row["UPNL (USD)"] else 0
-    header_bg = "#4CAF50" if upnl_val > 0 else "#F44336" if upnl_val < 0 else "#999"
-    
-    # Create popup using columns to center it
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.markdown(f"""
-        <div style='background:{header_bg};padding:10px;border-radius:8px;margin-bottom:10px;'>
-            <b>Create Alert for {st.session_state.popup_symbol}</b>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        st.markdown(f"**UPNL (USD):** {badge_upnl(popup_row['UPNL (USD)'])}", unsafe_allow_html=True)
-        st.markdown(f"**Mark Price:** {popup_row['Mark Price']}")
-        
-        with st.form("popup_alert_form"):
+        with right_col.form("alert_form"):
             criteria_choice = st.selectbox("Criteria", ["UPNL (USD)", "Mark Price"])
             condition_choice = st.selectbox("Condition", [">=", "<="])
             threshold_value = st.number_input("Threshold", format="%.2f")
             
-            col_save, col_cancel = st.columns(2)
-            with col_save:
-                save_clicked = st.form_submit_button("Save Alert", use_container_width=True)
-            with col_cancel:
-                cancel_clicked = st.form_submit_button("Cancel", use_container_width=True)
-            
-            if save_clicked:
-                st.session_state.alerts.append({
-                    "symbol": st.session_state.popup_symbol,
-                    "criteria": criteria_choice,
-                    "condition": condition_choice,
-                    "threshold": threshold_value
-                })
-                st.session_state.show_popup = False
-                st.session_state.popup_symbol = None
-                st.success(f"Alert created for {st.session_state.popup_symbol}")
-                st.rerun()
-            
-            if cancel_clicked:
-                st.session_state.show_popup = False
-                st.session_state.popup_symbol = None
-                st.rerun()
-
-# --- RIGHT: INFO ---
-if not st.session_state.show_popup:
-    right_col.info("Click on any Alert button to set an alert")
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.form_submit_button("Save Alert"):
+                    st.session_state.alerts.append({
+                        "symbol": st.session_state.edit_symbol,
+                        "criteria": criteria_choice,
+                        "condition": condition_choice,
+                        "threshold": threshold_value
+                    })
+                    st.session_state.edit_symbol = None
+                    st.rerun()
+            with col2:
+                if st.form_submit_button("Cancel"):
+                    st.session_state.edit_symbol = None
+                    st.rerun()
+    else:
+        right_col.error("Symbol not found")
+        st.session_state.edit_symbol = None
+else:
+    right_col.info("Click + button on any row to create alert")
 
 # --- ACTIVE ALERTS ---
 st.subheader("Active Alerts")
