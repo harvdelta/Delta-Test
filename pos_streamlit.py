@@ -223,11 +223,11 @@ if not df.empty:
             else:
                 table_html += f"<td>{row[col]}</td>"
         
-        # Create clickable + button that updates URL
+        # Create clickable + button that updates URL in same tab
         symbol_encoded = row['Symbol'].replace(' ', '%20').replace('&', '%26')
-        table_html += f"""<td><a href="?edit_symbol={symbol_encoded}" 
-                         style="text-decoration: none;">
-                         <span class='alert-btn'>+</span></a></td>"""
+        table_html += f"""<td><span class='alert-btn' 
+                         onclick="window.location.href='?edit_symbol={symbol_encoded}'" 
+                         style="cursor: pointer;">+</span></td>"""
         table_html += "</tr>"
 
     table_html += "</tbody></table>"
