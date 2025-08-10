@@ -199,38 +199,53 @@ left_col, right_col = st.columns([4, 1])
 
 # --- LEFT: TABLE ---
 if not df.empty:
-    table_html = "<table class='full-width-table'><thead><tr>"
-    for col in df.columns:
-        table_html += f"<th>{col.upper()}</th>"
-    table_html += "<th>ALERT</th></tr></thead><tbody>"
-
-    # Create alert buttons for each row
-    alert_buttons = []
-    for idx, row in df.iterrows():
-        table_html += "<tr>"
-        for col in df.columns:
-            if col == "Symbol":
-                table_html += f"<td class='symbol-cell'>{row[col]}</td>"
-            elif col == "UPNL (USD)":
-                table_html += f"<td>{badge_upnl(row[col])}</td>"
-            else:
-                table_html += f"<td>{row[col]}</td>"
-        table_html += f"<td>+</td>"  # Placeholder for button
-        table_html += "</tr>"
-        
-        # Create the actual Streamlit button
-        alert_buttons.append(row['Symbol'])
-
-    table_html += "</tbody></table>"
-    left_col.markdown(table_html, unsafe_allow_html=True)
+    # Add table header
+    header_cols = st.columns([2, 1, 1, 1, 1, 1, 1, 0.5])
+    header_cols[0].markdown("**SYMBOL**")
+    header_cols[1].markdown("**SIZE (LOTS)**")
+    header_cols[2].markdown("**SIZE (COINS)**")
+    header_cols[3].markdown("**ENTRY PRICE**")
+    header_cols[4].markdown("**INDEX PRICE**")
+    header_cols[5].markdown("**MARK PRICE**")
+    header_cols[6].markdown("**UPNL (USD)**")
+    header_cols[7].markdown("**ALERT**")
+    st.divider()
     
-    # Add alert buttons below the table
-    st.markdown("**Set Alerts:**")
-    button_cols = st.columns(len(alert_buttons))
-    for i, symbol in enumerate(alert_buttons):
-        if button_cols[i % len(button_cols)].button(f"+ {symbol}", key=f"alert_btn_{i}"):
-            st.session_state.edit_symbol = symbol
+    # Create table with individual buttons for each row
+    for idx, row in df.iterrows():
+        cols = st.columns([2, 1, 1, 1, 1, 1, 1, 0.5])  # Adjust column widths as needed
+        
+        # Display each column
+        cols[0].write(f"**{row['Symbol']}**")
+        cols[1].write(row['Size (lots)'])
+        cols[2].write(row['Size (coins)'])
+        cols[3].write(row['Entry Price'])
+        cols[4].write(row['Index Price'])
+        cols[5].write(row['Mark Price'])
+        
+        # Format UPNL with color
+        upnl_val = row['UPNL (USD)']
+        if upnl_val:
+            try:
+                num = float(upnl_val)
+                if num > 0:
+                    cols[6].markdown(f"<span style='color: #4CAF50; font-weight: bold;'>🟢 {num:.2f}</span>", unsafe_allow_html=True)
+                elif num < 0:
+                    cols[6].markdown(f"<span style='color: #F44336; font-weight: bold;'>🔴 {num:.2f}</span>", unsafe_allow_html=True)
+                else:
+                    cols[6].markdown(f"<span style='color: #999; font-weight: bold;'>⚪ {num:.2f}</span>", unsafe_allow_html=True)
+            except:
+                cols[6].write(upnl_val)
+        else:
+            cols[6].write(upnl_val)
+        
+        # Alert button
+        if cols[7].button("➕", key=f"alert_btn_{idx}", help=f"Set alert for {row['Symbol']}"):
+            st.session_state.edit_symbol = row['Symbol']
             st.rerun()
+        
+        # Add a separator line
+        st.divider()
 
 # --- RIGHT: ALERT EDITOR ---
 if st.session_state.edit_symbol:
