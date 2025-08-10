@@ -202,6 +202,15 @@ if "edit_symbol" in query_params:
     st.session_state.edit_symbol = query_params["edit_symbol"]
     # Clear the URL parameter
     st.query_params.clear()
+elif "delete_alert" in query_params:
+    try:
+        alert_index = int(query_params["delete_alert"])
+        if 0 <= alert_index < len(st.session_state.alerts):
+            st.session_state.alerts.pop(alert_index)
+        st.query_params.clear()
+        st.rerun()
+    except (ValueError, IndexError):
+        st.query_params.clear()
 
 # ---------- LAYOUT ----------
 left_col, right_col = st.columns([4, 1])
@@ -307,7 +316,11 @@ if st.session_state.alerts:
         </tr>
         """
     
-    alerts_html += "</tbody></table>"
+    alerts_html += """
+        </tbody>
+    </table>
+    """
+    
     st.markdown(alerts_html, unsafe_allow_html=True)
 else:
     st.write("No active alerts.")
