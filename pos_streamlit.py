@@ -199,29 +199,32 @@ left_col, right_col = st.columns([4, 1])
 
 # --- LEFT: TABLE ---
 if not df.empty:
-    table_html = "<table class='full-width-table'><thead><tr>"
-    for col in df.columns:
-        table_html += f"<th>{col.upper()}</th>"
-    table_html += "<th>ALERT</th></tr></thead><tbody>"
-
-    for idx, row in df.iterrows():
-        table_html += "<tr>"
-        for col in df.columns:
-            if col == "Symbol":
-                table_html += f"<td class='symbol-cell'>{row[col]}</td>"
-            elif col == "UPNL (USD)":
-                table_html += f"<td>{badge_upnl(row[col])}</td>"
-            else:
-                table_html += f"<td>{row[col]}</td>"
-        table_html += f"<td>+</td>"
-        table_html += "</tr>"
-
-    table_html += "</tbody></table>"
-    left_col.markdown(table_html, unsafe_allow_html=True)
+    # Add table headers
+    header_cols = left_col.columns([0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.2])
+    header_cols[0].markdown("**SYMBOL**")
+    header_cols[1].markdown("**SIZE (LOTS)**")
+    header_cols[2].markdown("**SIZE (COINS)**") 
+    header_cols[3].markdown("**ENTRY PRICE**")
+    header_cols[4].markdown("**INDEX PRICE**")
+    header_cols[5].markdown("**MARK PRICE**")
+    header_cols[6].markdown("**UPNL (USD)**")
+    header_cols[7].markdown("**ALERT**")
     
-    # Add invisible buttons that correspond to each row
+    # Create clickable + buttons for each row using columns
     for idx, row in df.iterrows():
-        if st.button(f"Set alert for {row['Symbol']}", key=f"alert_{idx}", type="secondary"):
+        cols = left_col.columns([0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.2])
+        
+        # Display data in monospace font to match original style
+        cols[0].markdown(f"<div style='font-family:monospace;font-weight:bold;'>{row['Symbol']}</div>", unsafe_allow_html=True)
+        cols[1].markdown(f"<div style='font-family:monospace;text-align:center;'>{row['Size (lots)']}</div>", unsafe_allow_html=True)
+        cols[2].markdown(f"<div style='font-family:monospace;text-align:center;'>{row['Size (coins)']}</div>", unsafe_allow_html=True)
+        cols[3].markdown(f"<div style='font-family:monospace;text-align:center;'>{row['Entry Price']}</div>", unsafe_allow_html=True)
+        cols[4].markdown(f"<div style='font-family:monospace;text-align:center;'>{row['Index Price']}</div>", unsafe_allow_html=True)
+        cols[5].markdown(f"<div style='font-family:monospace;text-align:center;'>{row['Mark Price']}</div>", unsafe_allow_html=True)
+        cols[6].markdown(f"<div style='font-family:monospace;text-align:center;'>{badge_upnl(row['UPNL (USD)'])}</div>", unsafe_allow_html=True)
+        
+        # Functional + button
+        if cols[7].button("+", key=f"alert_btn_{idx}"):
             st.session_state.edit_symbol = row['Symbol']
             st.rerun()
 
