@@ -191,8 +191,6 @@ st.markdown("""
 .full-width-table th {text-align: center; font-weight: bold; color: #999; padding: 8px;}
 .full-width-table td {text-align: center; font-family: monospace; padding: 8px; white-space: nowrap;}
 .symbol-cell {text-align: left !important; font-weight: bold; font-family: monospace;}
-.alert-btn {background-color: transparent; border: 1px solid #666; border-radius: 6px; padding: 0 8px; font-size: 18px; cursor: pointer; color: #aaa;}
-.alert-btn:hover {background-color: #444;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -206,6 +204,8 @@ if not df.empty:
         table_html += f"<th>{col.upper()}</th>"
     table_html += "<th>ALERT</th></tr></thead><tbody>"
 
+    # Create alert buttons for each row
+    alert_buttons = []
     for idx, row in df.iterrows():
         table_html += "<tr>"
         for col in df.columns:
@@ -215,11 +215,22 @@ if not df.empty:
                 table_html += f"<td>{badge_upnl(row[col])}</td>"
             else:
                 table_html += f"<td>{row[col]}</td>"
-        table_html += f"<td><button class='alert-btn' onclick=\"window.location.href='?edit_symbol={row['Symbol']}'\">+</button></td>"
+        table_html += f"<td>+</td>"  # Placeholder for button
         table_html += "</tr>"
+        
+        # Create the actual Streamlit button
+        alert_buttons.append(row['Symbol'])
 
     table_html += "</tbody></table>"
     left_col.markdown(table_html, unsafe_allow_html=True)
+    
+    # Add alert buttons below the table
+    st.markdown("**Set Alerts:**")
+    button_cols = st.columns(len(alert_buttons))
+    for i, symbol in enumerate(alert_buttons):
+        if button_cols[i % len(button_cols)].button(f"+ {symbol}", key=f"alert_btn_{i}"):
+            st.session_state.edit_symbol = symbol
+            st.rerun()
 
 # --- RIGHT: ALERT EDITOR ---
 if st.session_state.edit_symbol:
@@ -235,7 +246,8 @@ if st.session_state.edit_symbol:
         criteria_choice = st.selectbox("Criteria", ["UPNL (USD)", "Mark Price"])
         condition_choice = st.selectbox("Condition", [">=", "<="])
         threshold_value = st.number_input("Threshold", format="%.2f")
-        if st.form_submit_button("Save Alert"):
+        col1, col2 = st.columns(2)
+        if col1.form_submit_button("Save Alert"):
             st.session_state.alerts.append({
                 "symbol": st.session_state.edit_symbol,
                 "criteria": criteria_choice,
@@ -243,7 +255,10 @@ if st.session_state.edit_symbol:
                 "threshold": threshold_value
             })
             st.session_state.edit_symbol = None
-            st.experimental_rerun()
+            st.rerun()
+        if col2.form_submit_button("Cancel"):
+            st.session_state.edit_symbol = None
+            st.rerun()
 else:
     right_col.info("Select a contract to set an alert")
 
@@ -255,6 +270,6 @@ if st.session_state.alerts:
         cols[0].write(alert)
         if cols[1].button("❌", key=f"remove_alert_{i}"):
             st.session_state.alerts.pop(i)
-            st.experimental_rerun()
+            st.rerun()
 else:
     st.write("No active alerts.")
