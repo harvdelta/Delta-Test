@@ -95,19 +95,6 @@ def badge_upnl(val):
     else:
         return f"<span style='padding:4px 8px;border-radius:6px;background:#ddd;color:#000;font-weight:bold;'>{num:.2f}</span>"
 
-def badge_price(mark, entry):
-    try:
-        m = float(mark)
-        e = float(entry)
-    except:
-        return mark
-    if m > e:
-        return f"<span style='padding:4px 8px;border-radius:6px;background:#b6f7b0;color:#065f08;font-weight:bold;'>{m:.2f}</span>"
-    elif m < e:
-        return f"<span style='padding:4px 8px;border-radius:6px;background:#f7b0b0;color:#6b0000;font-weight:bold;'>{m:.2f}</span>"
-    else:
-        return f"<span style='padding:4px 8px;border-radius:6px;background:#ddd;color:#000;font-weight:bold;'>{m:.2f}</span>"
-
 # ---------- fetch data ----------
 positions_j = api_get("/v2/positions/margined")
 positions = positions_j.get("result", []) if isinstance(positions_j, dict) else []
@@ -139,7 +126,6 @@ for p in positions:
     entry_price = to_float(p.get("entry_price"))
     mark_price = to_float(p.get("mark_price"))
 
-    # Index price fallback
     index_price = p.get("index_price") or product.get("index_price")
     if isinstance(index_price, dict):
         index_price = index_price.get("index_price") or index_price.get("price")
@@ -149,7 +135,6 @@ for p in positions:
         index_price = index_map[underlying]
     index_price = to_float(index_price)
 
-    # UPNL calculation
     upnl_val = None
     size_coins = None
     if size_lots is not None and underlying:
@@ -173,12 +158,12 @@ for p in positions:
 
 df = pd.DataFrame(rows)
 
-# ---------- sort by absolute UPNL ----------
+# Sort by absolute UPNL
 def safe_abs_upnl(val):
     try:
         return abs(float(val))
     except:
-        return -999999  # push invalid to bottom
+        return -999999
 df = df.sort_values(by="UPNL (USD)", key=lambda x: x.map(safe_abs_upnl), ascending=False).reset_index(drop=True)
 
 # ---------- STATE ----------
@@ -211,28 +196,44 @@ for alert in st.session_state.alerts:
 if triggered_alerts:
     st.error("Triggered Alerts:\n" + "\n".join(triggered_alerts))
 
+# ---------- STYLING ----------
+st.markdown("""
+<style>
+.table-cell {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: monospace;
+    padding: 4px;
+}
+.table-header {
+    color: #888;
+    font-weight: bold;
+    font-size: 0.9rem;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # ---------- LAYOUT ----------
 st.title("📊 Delta Exchange Positions")
 
 left_col, right_col = st.columns([3, 1])
+col_widths = [2, 1, 1, 1, 1, 1, 1, 0.5]
 
 # --- LEFT: TABLE ---
 if not df.empty:
-    col_count = len(df.columns) + 1
-    header_cols = left_col.columns([1] * col_count)
+    header_cols = left_col.columns(col_widths)
     for i, cname in enumerate(df.columns):
-        header_cols[i].markdown(f"**{cname}**")
-    header_cols[-1].markdown("**Alert**")
+        header_cols[i].markdown(f"<div class='table-header'>{cname.upper()}</div>", unsafe_allow_html=True)
+    header_cols[-1].markdown("<div class='table-header'>ALERT</div>", unsafe_allow_html=True)
 
     for idx, row in df.iterrows():
-        row_cols = left_col.columns([1] * col_count)
+        row_cols = left_col.columns(col_widths)
         for i, cname in enumerate(df.columns):
             if cname == "UPNL (USD)":
                 row_cols[i].markdown(badge_upnl(row[cname]), unsafe_allow_html=True)
-            elif cname == "Mark Price":
-                row_cols[i].markdown(badge_price(row["Mark Price"], row["Entry Price"]), unsafe_allow_html=True)
             else:
-                row_cols[i].write(row[cname])
+                row_cols[i].markdown(f"<div class='table-cell'>{row[cname]}</div>", unsafe_allow_html=True)
         if row_cols[-1].button("➕", key=f"add_alert_{idx}"):
             st.session_state.edit_symbol = row["Symbol"]
 
@@ -253,7 +254,7 @@ if st.session_state.edit_symbol:
     right_col.markdown(f"<div style='background:{header_bg};padding:10px;border-radius:8px'><b>Create Alert</b></div>", unsafe_allow_html=True)
     right_col.markdown(f"**Symbol:** {st.session_state.edit_symbol}")
     right_col.markdown(f"**UPNL (USD):** {badge_upnl(row['UPNL (USD)'])}", unsafe_allow_html=True)
-    right_col.markdown(f"**Mark Price:** {badge_price(row['Mark Price'], row['Entry Price'])}", unsafe_allow_html=True)
+    right_col.markdown(f"**Mark Price:** {row['Mark Price']}")  # plain text
 
     with right_col.form("alert_form"):
         criteria_choice = st.selectbox("Criteria", ["UPNL (USD)", "Mark Price"])
