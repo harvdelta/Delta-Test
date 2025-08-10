@@ -201,15 +201,21 @@ st.markdown("""
 <style>
 .table-cell {
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
     font-family: monospace;
     padding: 4px;
+    text-align: center;
+}
+.symbol-cell {
+    font-weight: bold;
+    padding: 4px;
+    text-align: left;
+    white-space: nowrap;
 }
 .table-header {
     color: #888;
     font-weight: bold;
     font-size: 0.9rem;
+    text-align: center;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -218,19 +224,25 @@ st.markdown("""
 st.title("📊 Delta Exchange Positions")
 
 left_col, right_col = st.columns([3, 1])
-col_widths = [2, 1, 1, 1, 1, 1, 1, 0.5]
+col_widths = [2.5, 1, 1, 1, 1, 1, 1, 0.5]
 
 # --- LEFT: TABLE ---
 if not df.empty:
     header_cols = left_col.columns(col_widths)
     for i, cname in enumerate(df.columns):
-        header_cols[i].markdown(f"<div class='table-header'>{cname.upper()}</div>", unsafe_allow_html=True)
+        align_class = "table-header"
+        if cname == "Symbol":
+            header_cols[i].markdown(f"<div class='{align_class}' style='text-align:left'>{cname.upper()}</div>", unsafe_allow_html=True)
+        else:
+            header_cols[i].markdown(f"<div class='{align_class}'>{cname.upper()}</div>", unsafe_allow_html=True)
     header_cols[-1].markdown("<div class='table-header'>ALERT</div>", unsafe_allow_html=True)
 
     for idx, row in df.iterrows():
         row_cols = left_col.columns(col_widths)
         for i, cname in enumerate(df.columns):
-            if cname == "UPNL (USD)":
+            if cname == "Symbol":
+                row_cols[i].markdown(f"<div class='symbol-cell'>{row[cname]}</div>", unsafe_allow_html=True)
+            elif cname == "UPNL (USD)":
                 row_cols[i].markdown(badge_upnl(row[cname]), unsafe_allow_html=True)
             else:
                 row_cols[i].markdown(f"<div class='table-cell'>{row[cname]}</div>", unsafe_allow_html=True)
