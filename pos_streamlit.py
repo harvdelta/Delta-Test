@@ -177,20 +177,46 @@ def make_api_request(method, endpoint, payload=None):
         'api-key': API_KEY,
         'signature': signature,
         'timestamp': timestamp,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'User-Agent': 'DeltaExchangeClient/1.0'
     }
     
     try:
         if method == 'GET':
-            response = requests.get(url, headers=headers, timeout=10)
+            response = requests.get(url, headers=headers, timeout=15)
         elif method == 'POST':
-            response = requests.post(url, headers=headers, data=payload_str, timeout=10)
+            response = requests.post(url, headers=headers, data=payload_str, timeout=15)
         
-        response.raise_for_status()
+        # Debug API response
+        if response.status_code != 200:
+            st.error(f"API Error {response.status_code}: {response.text}")
+            return None
+            
         return response.json()
     except requests.exceptions.RequestException as e:
         st.error(f"API request failed: {e}")
+        st.error(f"URL: {url}")
+        st.error(f"Headers: {headers}")
         return None
+
+def test_delta_api():
+    """Test Delta Exchange API connection"""
+    # Try a simple public endpoint first
+    try:
+        response = requests.get(f"{BASE_URL}/v2/products", timeout=10)
+        if response.status_code != 200:
+            return False, f"Public API failed: {response.status_code}"
+    except Exception as e:
+        return False, f"Network error: {e}"
+    
+    # Test authenticated endpoint
+    try:
+        result = make_api_request('GET', '/v2/wallet/balances')
+        if result is None:
+            return False, "Authentication failed - check API keys"
+        return True, "API connection successful"
+    except Exception as e:
+        return False, f"Auth test failed: {e}"
 
 def get_positions():
     """Fetch current positions from Delta Exchange"""
@@ -530,3 +556,16 @@ with st.sidebar:
                 st.error(f"❌ Test failed: {e}")
         else:
             st.error("❌ No service available")
+    
+    if st.button("🔍 Test Delta API"):
+        success, message = test_delta_api()
+        if success:
+            st.success(f"✅ {message}")
+        else:
+            st.error(f"❌ {message}")
+    
+    # Show API credentials (masked)
+    st.write("**API Config:**")
+    st.write(f"API Key: {API_KEY[:10]}...")
+    st.write(f"API Secret: {API_SECRET[:10]}...")
+    st.write(f"Base URL: {BASE_URL}")
