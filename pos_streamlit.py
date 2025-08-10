@@ -6,6 +6,8 @@ import re
 import pandas as pd
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 
 # Auto-refresh every 3 seconds
 st_autorefresh(interval=3000)
@@ -17,6 +19,16 @@ API_SECRET = st.secrets["DELTA_API_SECRET"]
 BASE_URL = st.secrets.get("DELTA_BASE_URL", "https://api.india.delta.exchange")
 TG_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
+
+# Google Sheets config
+SPREADSHEET_ID = "1fb_qf6r01flTn6KKu15dkNr2aW-dhbhFr6kDKLkLqA8"  # Your Sheet ID
+SHEET_NAME = "Delta Alerts"
+
+# Load Google credentials from secrets
+gcp_secrets = st.secrets["gcp_service_account"]
+credentials = service_account.Credentials.from_service_account_info(gcp_secrets)
+service = build('sheets', 'v4', credentials=credentials)
+sheet = service.spreadsheets()
 
 # ---------- helpers ----------
 def sign_request(method: str, path: str, payload: str, timestamp: str) -> str:
@@ -95,6 +107,42 @@ def badge_upnl(val):
     else:
         return f"<span style='padding:4px 8px;border-radius:6px;background:#999;color:white;font-weight:bold;'>{num:.2f}</span>"
 
+# --------- Google Sheets functions ---------
+def load_alerts_from_sheet():
+    try:
+        result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range=SHEET_NAME).execute()
+        values = result.get('values', [])
+        alerts = []
+        for row in values:
+            if len(row) < 4:
+                continue
+            alerts.append({
+                "symbol": row[0],
+                "criteria": row[1],
+                "condition": row[2],
+                "threshold": float(row[3])
+            })
+        return alerts
+    except Exception as e:
+        st.error(f"Error loading alerts: {e}")
+        return []
+
+def save_alerts_to_sheet(alerts):
+    try:
+        values = []
+        for alert in alerts:
+            values.append([
+                alert["symbol"],
+                alert["criteria"],
+                alert["condition"],
+                str(alert["threshold"])
+            ])
+        body = {'values': values}
+        sheet.values().clear(spreadsheetId=SPREADSHEET_ID, range=SHEET_NAME).execute()
+        sheet.values().update(spreadsheetId=SPREADSHEET_ID, range=SHEET_NAME, valueInputOption="RAW", body=body).execute()
+    except Exception as e:
+        st.error(f"Error saving alerts: {e}")
+
 # ---------- fetch data ----------
 positions_j = api_get("/v2/positions/margined")
 positions = positions_j.get("result", []) if isinstance(positions_j, dict) else []
@@ -158,18 +206,17 @@ for p in positions:
 
 df = pd.DataFrame(rows)
 
-# Sort by absolute UPNL
 df = df.sort_values(by="UPNL (USD)", key=lambda x: x.map(lambda v: abs(float(v)) if v else -999999), ascending=False).reset_index(drop=True)
 
 # ---------- STATE ----------
 if "alerts" not in st.session_state:
-    st.session_state.alerts = []
+    st.session_state.alerts = load_alerts_from_sheet()
 if "triggered" not in st.session_state:
     st.session_state.triggered = set()
 if "edit_symbol" not in st.session_state:
     st.session_state.edit_symbol = None
 
-# ---------- ALERT CHECK (fixed to avoid repeats) ----------
+# ---------- ALERT CHECK ----------
 for alert in st.session_state.alerts:
     row = df[df["Symbol"] == alert["symbol"]]
     if row.empty:
@@ -203,19 +250,20 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Handle button clicks through URL parameters
-query_params = st.query_params
+query_params = st.experimental_get_query_params()
 if "edit_symbol" in query_params:
-    st.session_state.edit_symbol = query_params["edit_symbol"]
-    st.query_params.clear()
+    st.session_state.edit_symbol = query_params["edit_symbol"][0]
+    st.experimental_set_query_params()
 elif "delete_alert" in query_params:
     try:
-        alert_index = int(query_params["delete_alert"])
+        alert_index = int(query_params["delete_alert"][0])
         if 0 <= alert_index < len(st.session_state.alerts):
             st.session_state.alerts.pop(alert_index)
-        st.query_params.clear()
+            save_alerts_to_sheet(st.session_state.alerts)
+        st.experimental_set_query_params()
         st.experimental_rerun()
     except (ValueError, IndexError):
-        st.query_params.clear()
+        st.experimental_set_query_params()
 
 # ---------- LAYOUT ----------
 left_col, right_col = st.columns([4, 1])
@@ -270,6 +318,7 @@ if st.session_state.edit_symbol:
                         "condition": condition_choice,
                         "threshold": threshold_value
                     })
+                    save_alerts_to_sheet(st.session_state.alerts)
                     st.session_state.edit_symbol = None
                     st.experimental_rerun()
             with col2:
