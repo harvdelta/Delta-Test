@@ -2,21 +2,38 @@ import streamlit as st
 import pandas as pd
 import requests
 
-# ---------------- CONFIG ----------------
+# -------------------------------------------------
+# PAGE SETTINGS
+# -------------------------------------------------
 st.set_page_config(layout="wide")
-st.title("📊 Delta Exchange Positions")
+st.markdown(
+    "<h1 style='display:flex; align-items:center;'>"
+    "<img src='https://img.icons8.com/color/48/combo-chart--v1.png' style='margin-right:10px'/>"
+    "Delta Exchange Positions"
+    "</h1>",
+    unsafe_allow_html=True
+)
 
-# Session state for alert editing
+# -------------------------------------------------
+# SESSION STATE FOR ALERT EDITOR
+# -------------------------------------------------
 if "edit_symbol" not in st.session_state:
     st.session_state.edit_symbol = None
 
-# ---------------- FETCH DATA ----------------
+# -------------------------------------------------
+# FETCH POSITIONS (REPLACE WITH YOUR API)
+# -------------------------------------------------
 def fetch_positions():
-    url = "https://api.delta.exchange/v2/positions"
     try:
-        resp = requests.get(url)
-        resp.raise_for_status()
-        data = resp.json()["result"]
+        # This is placeholder data — replace with your API call
+        data = [
+            {"symbol": "C-BTC-120800-110825", "size": -250, "size_currency": -0.25, "entry_price": 197.0, "index_price": 118258.6, "mark_price": 106.15, "unrealized_pnl": 22.71},
+            {"symbol": "C-BTC-119400-100825", "size": -312, "size_currency": -0.31, "entry_price": 75.5, "index_price": 118258.6, "mark_price": 5.62, "unrealized_pnl": 21.80},
+            {"symbol": "C-BTC-119800-100825", "size": -250, "size_currency": -0.25, "entry_price": 85.0, "index_price": 118258.6, "mark_price": 2.11, "unrealized_pnl": 20.72},
+            {"symbol": "C-BTC-130000-290825", "size": -300, "size_currency": -0.30, "entry_price": 468.0, "index_price": 118258.6, "mark_price": 404.78, "unrealized_pnl": 18.97},
+            {"symbol": "C-ETH-4400-110825", "size": -169, "size_currency": -1.69, "entry_price": 18.9, "index_price": 4229.44, "mark_price": 8.40, "unrealized_pnl": 17.75},
+            {"symbol": "C-ETH-4800-290825", "size": -108, "size_currency": -1.08, "entry_price": 65.4, "index_price": 4229.44, "mark_price": 77.86, "unrealized_pnl": -13.45},
+        ]
         return pd.DataFrame(data)
     except Exception as e:
         st.error(f"Error fetching positions: {e}")
@@ -24,95 +41,53 @@ def fetch_positions():
 
 df = fetch_positions()
 
-# ---------------- PROCESS DATA ----------------
+# -------------------------------------------------
+# RENDER TABLE
+# -------------------------------------------------
 if not df.empty:
-    # Keep only the required columns
-    df = df[["symbol", "size", "size_currency", "entry_price", "index_price", "mark_price", "unrealized_pnl"]]
+    # Rename columns for display
     df.columns = ["Symbol", "Size (lots)", "Size (coins)", "Entry Price", "Index Price", "Mark Price", "UPNL (USD)"]
 
-    # Color for UPNL
-    def color_upnl(val):
-        color = "green" if val > 0 else "red"
-        return f"<div style='background-color:{color};color:white;border-radius:6px;padding:4px;text-align:center'>{val:.2f}</div>"
+    # Table column ratios
+    col_widths = [2.5, 1.2, 1.2, 1.2, 1.5, 1.5, 1.5, 0.8]
 
-    # Create HTML table
-    table_html = """
-    <style>
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        th {
-            text-align: center;
-            padding: 8px;
-        }
-        td {
-            text-align: center;
-            padding: 8px;
-            font-family: monospace;
-        }
-        th:first-child, td:first-child {
-            text-align: left;
-            font-weight: bold;
-            font-family: sans-serif;
-        }
-        button.alert-btn {
-            background-color: #262730;
-            border: 1px solid #555;
-            color: white;
-            padding: 4px 8px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 14px;
-        }
-        button.alert-btn:hover {
-            background-color: #444;
-        }
-    </style>
-    <table>
-        <tr>
-            {}
-        </tr>
-    """.format("".join(f"<th>{col}</th>" for col in df.columns) + "<th>Alert</th>")
+    # Header
+    header_cols = st.columns(col_widths)
+    headers = list(df.columns) + ["Alert"]
+    for hcol, hname in zip(header_cols, headers):
+        hcol.markdown(f"<b>{hname}</b>", unsafe_allow_html=True)
 
-    # Build rows
+    # Rows
     for _, row in df.iterrows():
-        table_html += "<tr>"
-        for col in df.columns:
-            if col == "UPNL (USD)":
-                table_html += f"<td>{color_upnl(row[col])}</td>"
-            else:
-                table_html += f"<td>{row[col]}</td>"
-        # Alert button triggers session state change via form
-        btn_key = f"alert_{row['Symbol']}"
-        table_html += f"<td><form action='' method='post'><input type='hidden' name='symbol' value='{row['Symbol']}' /><button class='alert-btn' type='submit'>+</button></form></td>"
-        table_html += "</tr>"
+        cols = st.columns(col_widths)
+        cols[0].markdown(f"<b>{row['Symbol']}</b>", unsafe_allow_html=True)
+        cols[1].write(row["Size (lots)"])
+        cols[2].write(row["Size (coins)"])
+        cols[3].write(f"{row['Entry Price']:.2f}")
+        cols[4].write(f"{row['Index Price']:.2f}")
+        cols[5].write(f"{row['Mark Price']:.2f}")
+        
+        # UPNL color coding
+        upnl_color = "#2ecc71" if row["UPNL (USD)"] > 0 else "#e74c3c"
+        cols[6].markdown(
+            f"<div style='background-color:{upnl_color};color:white;border-radius:6px;padding:4px;text-align:center'>{row['UPNL (USD)']:.2f}</div>",
+            unsafe_allow_html=True
+        )
 
-    table_html += "</table>"
+        # Alert button
+        if cols[7].button("➕", key=f"alert_{row['Symbol']}", help=f"Set alert for {row['Symbol']}"):
+            st.session_state.edit_symbol = row["Symbol"]
 
-    st.markdown(table_html, unsafe_allow_html=True)
-
-# ---------------- FORM HANDLING ----------------
-# Streamlit hack to capture POST form submissions
-import streamlit.runtime.scriptrunner.script_run_context as ctx
-import streamlit.runtime.state.session_state as state
-
-# We can't capture HTML form post in Streamlit directly — so we'll use st.button in real layout
-# Instead of using pure HTML buttons, let's rebuild with Streamlit's native elements for real-time session changes.
-
-# Rerun with native button layout
-st.write("")  # Spacer
-
-for i, row in df.iterrows():
-    if st.button("+", key=f"alertbtn_{row['Symbol']}", help=f"Set alert for {row['Symbol']}"):
-        st.session_state.edit_symbol = row['Symbol']
-
-# ---------------- ALERT EDITOR ----------------
-if st.session_state.edit_symbol:
-    with st.sidebar:
+# -------------------------------------------------
+# ALERT EDITOR PANEL
+# -------------------------------------------------
+with st.sidebar:
+    if st.session_state.edit_symbol:
         st.header(f"Set Alert for {st.session_state.edit_symbol}")
         move_percent = st.number_input("Move %", value=5.0, step=0.1)
         price_target = st.number_input("Target Price", value=0.0, step=0.01)
-        if st.button("Save Alert"):
-            st.success(f"Alert set for {st.session_state.edit_symbol} — {move_percent}% or ${price_target}")
+        if st.button("💾 Save Alert"):
+            st.success(f"✅ Alert set for {st.session_state.edit_symbol} — {move_percent}% or ${price_target}")
             st.session_state.edit_symbol = None
+    else:
+        st.info("Select a contract to set an alert")
