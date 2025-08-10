@@ -1,4 +1,4 @@
-import json
+import os
 import time
 import hmac
 import hashlib
@@ -7,14 +7,10 @@ import re
 import pandas as pd
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-from datetime import datetime
 
 # Auto-refresh every 3 seconds
 st_autorefresh(interval=3000)
-st.set_page_config(layout="wide", page_title="Delta Exchange Trading Dashboard")
+st.set_page_config(layout="wide")
 
 # ---------- CONFIG ----------
 API_KEY = st.secrets["DELTA_API_KEY"]
@@ -23,549 +19,287 @@ BASE_URL = st.secrets.get("DELTA_BASE_URL", "https://api.india.delta.exchange")
 TG_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
 
-# Google Sheets config
-SPREADSHEET_ID = "1fb_qf6r01flTn6KKu15dkNr2aW-dhbhFr6kDKLkLqA8"
-SHEET_NAME = "Delta Alerts"
-RANGE_NAME = f"{SHEET_NAME}!A1:Z1000"
+# ---------- helpers ----------
+def sign_request(method: str, path: str, payload: str, timestamp: str) -> str:
+    sig_data = method + timestamp + path + payload
+    return hmac.new(API_SECRET.encode(), sig_data.encode(), hashlib.sha256).hexdigest()
 
-# ---------- Google Sheets Authentication ----------
-@st.cache_resource
-def get_gsheets_service():
-    """Cached Google Sheets service to avoid re-initialization"""
-    try:
-        gcp_json_str = st.secrets["GCP_CREDENTIALS_JSON"]
-        gcp_info = json.loads(gcp_json_str)
-        scopes = ['https://www.googleapis.com/auth/spreadsheets']
-        creds = Credentials.from_service_account_info(gcp_info, scopes=scopes)
-        service = build('sheets', 'v4', credentials=creds)
-        return service
-    except Exception as e:
-        st.error(f"Google Sheets connection failed: {e}")
-        return None
-
-def ensure_sheet_exists():
-    """Ensure the alerts sheet exists"""
-    try:
-        service = get_gsheets_service()
-        if not service:
-            return False
-            
-        spreadsheet = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
-        sheets = spreadsheet.get('sheets', [])
-        sheet_titles = [s.get("properties", {}).get("title") for s in sheets]
-
-        if SHEET_NAME not in sheet_titles:
-            batch_update_body = {
-                "requests": [{
-                    "addSheet": {
-                        "properties": {
-                            "title": SHEET_NAME,
-                            "gridProperties": {"rowCount": 1000, "columnCount": 26}
-                        }
-                    }
-                }]
-            }
-            service.spreadsheets().batchUpdate(spreadsheetId=SPREADSHEET_ID, body=batch_update_body).execute()
-            st.success(f"Created sheet '{SHEET_NAME}'")
-        return True
-    except HttpError as e:
-        st.error(f"Error ensuring sheet exists: {e}")
-        return False
-
-def load_alerts_from_sheets():
-    """Load alerts from Google Sheets"""
-    try:
-        service = get_gsheets_service()
-        if not service:
-            return []
-            
-        if not ensure_sheet_exists():
-            return []
-            
-        result = service.spreadsheets().values().get(spreadsheetId=SPREADSHEET_ID, range=RANGE_NAME).execute()
-        values = result.get('values', [])
-
-        if not values or len(values) < 2:
-            return []
-
-        headers = values[0]
-        alerts = []
-        for row in values[1:]:
-            if not any(row):  # Skip empty rows
-                continue
-            alert = {headers[i]: row[i] if i < len(row) else '' for i in range(len(headers))}
-            try:
-                alert['threshold'] = float(alert.get('threshold', 0))
-            except ValueError:
-                alert['threshold'] = 0
-            alerts.append(alert)
-        return alerts
-    except HttpError as e:
-        st.error(f"Error loading alerts: {e}")
-        return []
-    except Exception as e:
-        st.error(f"Unexpected error loading alerts: {e}")
-        return []
-
-def save_alerts_to_sheets(alerts):
-    """Save alerts to Google Sheets"""
-    try:
-        service = get_gsheets_service()
-        if not service:
-            raise Exception("Google Sheets service not available")
-            
-        if not ensure_sheet_exists():
-            raise Exception("Could not create/access sheet")
-        
-        # Clear the sheet first
-        service.spreadsheets().values().clear(
-            spreadsheetId=SPREADSHEET_ID, 
-            range=RANGE_NAME
-        ).execute()
-        
-        if not alerts:
-            return True
-
-        headers = ["symbol", "criteria", "condition", "threshold", "created_at"]
-        values = [headers]
-        
-        for alert in alerts:
-            values.append([
-                alert.get("symbol", ""),
-                alert.get("criteria", ""),
-                alert.get("condition", ""),
-                str(alert.get("threshold", "")),
-                alert.get("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-            ])
-
-        body = {"values": values}
-        result = service.spreadsheets().values().update(
-            spreadsheetId=SPREADSHEET_ID,
-            range=RANGE_NAME,
-            valueInputOption="RAW",
-            body=body
-        ).execute()
-        
-        return True
-        
-    except HttpError as e:
-        st.error(f"Google Sheets API error: {e}")
-        return False
-    except Exception as e:
-        st.error(f"Error saving alerts: {e}")
-        return False
-
-# ---------- Delta Exchange API Functions ----------
-def generate_signature(method, endpoint, payload=""):
-    """Generate HMAC signature for Delta Exchange API"""
+def api_get(path: str, timeout=15):
     timestamp = str(int(time.time()))
-    signature_data = method + timestamp + endpoint + payload
-    signature = hmac.new(
-        API_SECRET.encode('utf-8'),
-        signature_data.encode('utf-8'),
-        hashlib.sha256
-    ).hexdigest()
-    return signature, timestamp
-
-def make_api_request(method, endpoint, payload=None):
-    """Make authenticated request to Delta Exchange API"""
-    url = BASE_URL + endpoint
-    payload_str = json.dumps(payload) if payload else ""
-    signature, timestamp = generate_signature(method, endpoint, payload_str)
-    
+    method = "GET"
+    payload = ""
+    signature = sign_request(method, path, payload, timestamp)
     headers = {
-        'api-key': API_KEY,
-        'signature': signature,
-        'timestamp': timestamp,
-        'Content-Type': 'application/json',
-        'User-Agent': 'DeltaExchangeClient/1.0'
+        "Accept": "application/json",
+        "api-key": API_KEY,
+        "signature": signature,
+        "timestamp": timestamp,
     }
-    
+    url = BASE_URL.rstrip("/") + path
+    resp = requests.get(url, headers=headers, timeout=timeout)
+    resp.raise_for_status()
+    return resp.json()
+
+def to_float(x):
     try:
-        if method == 'GET':
-            response = requests.get(url, headers=headers, timeout=15)
-        elif method == 'POST':
-            response = requests.post(url, headers=headers, data=payload_str, timeout=15)
-        
-        # Debug API response
-        if response.status_code != 200:
-            st.error(f"API Error {response.status_code}: {response.text}")
-            return None
-            
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        st.error(f"API request failed: {e}")
-        st.error(f"URL: {url}")
-        st.error(f"Headers: {headers}")
+        return float(x)
+    except (TypeError, ValueError):
         return None
 
-def test_delta_api():
-    """Test Delta Exchange API connection"""
-    # Try a simple public endpoint first
-    try:
-        response = requests.get(f"{BASE_URL}/v2/products", timeout=10)
-        if response.status_code != 200:
-            return False, f"Public API failed: {response.status_code}"
-    except Exception as e:
-        return False, f"Network error: {e}"
-    
-    # Test authenticated endpoint
-    try:
-        result = make_api_request('GET', '/v2/wallet/balances')
-        if result is None:
-            return False, "Authentication failed - check API keys"
-        return True, "API connection successful"
-    except Exception as e:
-        return False, f"Auth test failed: {e}"
+def detect_underlying(product: dict, fallback_symbol: str):
+    if not isinstance(product, dict):
+        product = {}
+    for key in ("underlying_symbol", "underlying", "base_asset_symbol", "settlement_asset_symbol"):
+        val = product.get(key)
+        if isinstance(val, str):
+            v = val.upper()
+            if "BTC" in v:
+                return "BTC"
+            if "ETH" in v:
+                return "ETH"
+    spot = product.get("spot_index") or {}
+    if isinstance(spot, dict):
+        s = (spot.get("symbol") or "").upper()
+        if "BTC" in s:
+            return "BTC"
+        if "ETH" in s:
+            return "ETH"
+    txt = (fallback_symbol or "").upper()
+    m = re.search(r"\b(BTC|ETH)\b", txt)
+    if m:
+        return m.group(1)
+    if "BTC" in txt:
+        return "BTC"
+    if "ETH" in txt:
+        return "ETH"
+    return None
 
-def get_positions():
-    """Fetch current positions from Delta Exchange"""
-    return make_api_request('GET', '/v2/positions')
-
-def get_tickers():
-    """Fetch all tickers from Delta Exchange"""
-    try:
-        response = requests.get(f"{BASE_URL}/v2/tickers", timeout=10)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        st.error(f"Failed to fetch tickers: {e}")
-        return None
-
-def get_wallet_balances():
-    """Fetch wallet balances"""
-    return make_api_request('GET', '/v2/wallet/balances')
-
-# ---------- Telegram Functions ----------
-def send_telegram_message(message):
-    """Send alert message to Telegram"""
+def send_telegram_message(text):
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
-        return False
-    
+        return
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
-    params = {
-        'chat_id': TG_CHAT_ID,
-        'text': message,
-        'parse_mode': 'HTML'
-    }
-    
+    payload = {"chat_id": TG_CHAT_ID, "text": text}
     try:
-        response = requests.get(url, params=params, timeout=10)
-        return response.status_code == 200
-    except Exception as e:
-        st.error(f"Failed to send Telegram message: {e}")
-        return False
+        requests.post(url, data=payload, timeout=5)
+    except:
+        pass
 
-# ---------- Alert Processing ----------
-def check_alerts(df, alerts):
-    """Check if any alerts should be triggered"""
-    triggered_alerts = []
-    
-    for alert in alerts:
-        symbol = alert['symbol']
-        criteria = alert['criteria']
-        condition = alert['condition']
-        threshold = alert['threshold']
-        
-        # Find matching row in dataframe
-        matching_rows = df[df['symbol'] == symbol]
-        if matching_rows.empty:
-            continue
-            
-        current_value = None
-        row = matching_rows.iloc[0]
-        
-        # Get current value based on criteria
-        if criteria == 'price':
-            current_value = row.get('mark_price', 0)
-        elif criteria == 'pnl':
-            current_value = row.get('unrealized_pnl', 0)
-        elif criteria == 'pnl_percent':
-            current_value = row.get('unrealized_pnl_percent', 0)
-        
-        if current_value is None:
-            continue
-            
-        # Check condition
-        alert_triggered = False
-        if condition == 'above' and current_value > threshold:
-            alert_triggered = True
-        elif condition == 'below' and current_value < threshold:
-            alert_triggered = True
-        elif condition == 'equal' and abs(current_value - threshold) < 0.01:
-            alert_triggered = True
-            
-        if alert_triggered:
-            triggered_alerts.append({
-                'alert': alert,
-                'current_value': current_value,
-                'symbol': symbol,
-                'criteria': criteria,
-                'condition': condition,
-                'threshold': threshold
-            })
-    
-    return triggered_alerts
-
-# ---------- Initialize Session State ----------
-def initialize_alerts():
-    """Initialize alerts from Google Sheets on startup"""
+def badge_upnl(val):
     try:
-        alerts = load_alerts_from_sheets()
-        st.session_state.alerts = alerts
-        return len(alerts)
-    except Exception as e:
-        st.error(f"Failed to initialize alerts: {e}")
-        st.session_state.alerts = []
-        return 0
+        num = float(val)
+    except:
+        return val
+    if num > 0:
+        return f"<span style='padding:4px 8px;border-radius:6px;background:#4CAF50;color:white;font-weight:bold;'>{num:.2f}</span>"
+    elif num < 0:
+        return f"<span style='padding:4px 8px;border-radius:6px;background:#F44336;color:white;font-weight:bold;'>{num:.2f}</span>"
+    else:
+        return f"<span style='padding:4px 8px;border-radius:6px;background:#999;color:white;font-weight:bold;'>{num:.2f}</span>"
 
-# Initialize session state
-if 'alerts' not in st.session_state:
-    count = initialize_alerts()
+# ---------- fetch data ----------
+positions_j = api_get("/v2/positions/margined")
+positions = positions_j.get("result", []) if isinstance(positions_j, dict) else []
 
-if 'triggered' not in st.session_state:
+tickers_j = api_get("/v2/tickers")
+tickers = tickers_j.get("result", []) if isinstance(tickers_j, dict) else []
+
+# ---------- BTC/ETH index map ----------
+index_map = {}
+for t in tickers:
+    sym = (t.get("symbol") or "").upper()
+    price = t.get("index_price") or t.get("spot_price") or t.get("last_traded_price") or t.get("mark_price")
+    price = to_float(price)
+    if not price:
+        continue
+    if "BTC" in sym and "USD" in sym and "BTC" not in index_map:
+        index_map["BTC"] = price
+    if "ETH" in sym and "USD" in sym and "ETH" not in index_map:
+        index_map["ETH"] = price
+
+# ---------- process positions ----------
+rows = []
+for p in positions:
+    product = p.get("product") or {}
+    contract_symbol = product.get("symbol") or p.get("symbol") or ""
+    size_lots = to_float(p.get("size"))
+    underlying = detect_underlying(product, contract_symbol)
+
+    entry_price = to_float(p.get("entry_price"))
+    mark_price = to_float(p.get("mark_price"))
+
+    index_price = p.get("index_price") or product.get("index_price")
+    if isinstance(index_price, dict):
+        index_price = index_price.get("index_price") or index_price.get("price")
+    if index_price is None and isinstance(product.get("spot_index"), dict):
+        index_price = product["spot_index"].get("index_price") or product["spot_index"].get("spot_price")
+    if index_price is None and underlying and underlying in index_map:
+        index_price = index_map[underlying]
+    index_price = to_float(index_price)
+
+    upnl_val = None
+    size_coins = None
+    if size_lots is not None and underlying:
+        lots_per_coin = {"BTC": 1000.0, "ETH": 100.0}.get(underlying, 1.0)
+        size_coins = size_lots / lots_per_coin
+    if entry_price is not None and mark_price is not None and size_coins is not None:
+        if size_coins < 0:
+            upnl_val = (entry_price - mark_price) * abs(size_coins)
+        else:
+            upnl_val = (mark_price - entry_price) * abs(size_coins)
+
+    rows.append({
+        "Symbol": contract_symbol,
+        "Size (lots)": f"{size_lots:.0f}" if size_lots is not None else None,
+        "Size (coins)": f"{size_coins:.2f}" if size_coins is not None else None,
+        "Entry Price": f"{entry_price:.2f}" if entry_price is not None else None,
+        "Index Price": f"{index_price:.2f}" if index_price is not None else None,
+        "Mark Price": f"{mark_price:.2f}" if mark_price is not None else None,
+        "UPNL (USD)": f"{upnl_val:.2f}" if upnl_val is not None else None
+    })
+
+df = pd.DataFrame(rows)
+
+# Sort by absolute UPNL
+df = df.sort_values(by="UPNL (USD)", key=lambda x: x.map(lambda v: abs(float(v)) if v else -999999), ascending=False).reset_index(drop=True)
+
+# ---------- STATE ----------
+if "alerts" not in st.session_state:
+    st.session_state.alerts = []
+if "triggered" not in st.session_state:
     st.session_state.triggered = set()
-
-if 'edit_symbol' not in st.session_state:
+if "edit_symbol" not in st.session_state:
     st.session_state.edit_symbol = None
 
-# ---------- Helper Functions for Alert Management ----------
-def add_alert(alert):
-    """Add new alert and save to sheets"""
-    alert['created_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    st.session_state.alerts.append(alert)
-    
-    if save_alerts_to_sheets(st.session_state.alerts):
-        st.success(f"✅ Alert saved for {alert['symbol']}")
-        return True
-    else:
-        st.error("❌ Failed to save alert")
-        # Remove from session state since save failed
-        st.session_state.alerts.pop()
-        return False
-
-def delete_alert(index):
-    """Delete alert and save to sheets"""
-    if 0 <= index < len(st.session_state.alerts):
-        deleted_alert = st.session_state.alerts.pop(index)
-        
-        if save_alerts_to_sheets(st.session_state.alerts):
-            st.success(f"🗑️ Deleted alert for {deleted_alert.get('symbol', 'Unknown')}")
-            return True
-        else:
-            st.error("❌ Failed to delete alert")
-            # Restore the alert since delete failed
-            st.session_state.alerts.insert(index, deleted_alert)
-            return False
-
-def sync_alerts():
-    """Force sync alerts from Google Sheets"""
+# ---------- ALERT CHECK (fixed to avoid repeats) ----------
+for alert in st.session_state.alerts:
+    row = df[df["Symbol"] == alert["symbol"]]
+    if row.empty:
+        continue
+    val_str = row.iloc[0].get(alert["criteria"])
     try:
-        alerts = load_alerts_from_sheets()
-        st.session_state.alerts = alerts
-        st.success(f"🔄 Synced {len(alerts)} alerts from Google Sheets")
-    except Exception as e:
-        st.error(f"Failed to sync alerts: {e}")
+        val = float(val_str)
+    except:
+        continue
 
-# ---------- Main Dashboard UI ----------
-st.title("🔥 Delta Exchange Trading Dashboard")
+    cond = (val >= alert["threshold"]) if alert["condition"] == ">=" else (val <= alert["threshold"])
+    alert_id = f"{alert['symbol']}-{alert['criteria']}-{alert['condition']}-{alert['threshold']}"
 
-# Top controls
-col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+    if cond and alert_id not in st.session_state.triggered:
+        send_telegram_message(f"ALERT: {alert['symbol']} {alert['criteria']} {alert['condition']} {alert['threshold']}")
+        st.session_state.triggered.add(alert_id)
 
-with col1:
-    if st.button("🔄 Refresh Data"):
+    if not cond and alert_id in st.session_state.triggered:
+        st.session_state.triggered.remove(alert_id)
+
+# ---------- CSS ----------
+st.markdown("""
+<style>
+.full-width-table {width: 100%; border-collapse: collapse;}
+.full-width-table th {text-align: center; font-weight: bold; color: #999; padding: 8px;}
+.full-width-table td {text-align: center; font-family: monospace; padding: 8px; white-space: nowrap;}
+.symbol-cell {text-align: left !important; font-weight: bold; font-family: monospace;}
+.alert-btn {background-color: transparent; border: 1px solid #666; border-radius: 6px; padding: 0 8px; font-size: 18px; cursor: pointer; color: #aaa;}
+.alert-btn:hover {background-color: #444;}
+</style>
+""", unsafe_allow_html=True)
+
+# Handle button clicks through URL parameters
+query_params = st.query_params
+if "edit_symbol" in query_params:
+    st.session_state.edit_symbol = query_params["edit_symbol"]
+    st.query_params.clear()
+elif "delete_alert" in query_params:
+    try:
+        alert_index = int(query_params["delete_alert"])
+        if 0 <= alert_index < len(st.session_state.alerts):
+            st.session_state.alerts.pop(alert_index)
+        st.query_params.clear()
         st.rerun()
+    except (ValueError, IndexError):
+        st.query_params.clear()
 
-with col2:
-    if st.button("🔄 Sync Alerts"):
-        sync_alerts()
+# ---------- LAYOUT ----------
+left_col, right_col = st.columns([4, 1])
 
-with col3:
-    st.metric("Active Alerts", len(st.session_state.alerts))
+# --- LEFT: TABLE ---
+if not df.empty:
+    table_html = "<table class='full-width-table'><thead><tr>"
+    for col in df.columns:
+        table_html += f"<th>{col.upper()}</th>"
+    table_html += "<th>ALERT</th></tr></thead><tbody>"
 
-with col4:
-    if st.button("📊 Test Connection"):
-        service = get_gsheets_service()
-        if service:
-            st.success("✅ Google Sheets Connected")
-        else:
-            st.error("❌ Connection Failed")
-
-st.markdown("---")
-
-# ---------- Fetch and Display Data ----------
-# Fetch current positions
-with st.spinner("Fetching positions..."):
-    positions_data = get_positions()
-
-# Fetch tickers for price data
-with st.spinner("Fetching market data..."):
-    tickers_data = get_tickers()
-
-# Process positions if available
-positions_df = pd.DataFrame()
-if positions_data and 'result' in positions_data:
-    positions = positions_data['result']
-    if positions:
-        positions_df = pd.DataFrame(positions)
-        
-        # Add current prices from tickers
-        if tickers_data and 'result' in tickers_data:
-            tickers_df = pd.DataFrame(tickers_data['result'])
-            if 'symbol' in tickers_df.columns and 'close' in tickers_df.columns:
-                price_map = dict(zip(tickers_df['symbol'], tickers_df['close']))
-                positions_df['current_price'] = positions_df['symbol'].map(price_map)
-        
-        # Calculate unrealized PnL percentage
-        if 'unrealized_pnl' in positions_df.columns and 'margin' in positions_df.columns:
-            positions_df['unrealized_pnl_percent'] = (
-                positions_df['unrealized_pnl'] / positions_df['margin'].replace(0, 1) * 100
-            )
-
-# Display positions
-if not positions_df.empty:
-    st.subheader("📈 Current Positions")
-    
-    # Format the dataframe for display
-    display_columns = ['symbol', 'size', 'entry_price', 'mark_price', 'unrealized_pnl']
-    if 'unrealized_pnl_percent' in positions_df.columns:
-        display_columns.append('unrealized_pnl_percent')
-    if 'margin' in positions_df.columns:
-        display_columns.append('margin')
-    
-    display_df = positions_df[display_columns].copy()
-    
-    # Format numeric columns
-    numeric_columns = ['unrealized_pnl', 'unrealized_pnl_percent', 'entry_price', 'mark_price']
-    for col in numeric_columns:
-        if col in display_df.columns:
-            display_df[col] = pd.to_numeric(display_df[col], errors='coerce').round(2)
-    
-    st.dataframe(display_df, use_container_width=True)
-    
-    # Check alerts
-    triggered_alerts = check_alerts(positions_df, st.session_state.alerts)
-    
-    # Process triggered alerts
-    for triggered in triggered_alerts:
-        alert_key = f"{triggered['symbol']}_{triggered['criteria']}_{triggered['condition']}_{triggered['threshold']}"
-        
-        if alert_key not in st.session_state.triggered:
-            st.session_state.triggered.add(alert_key)
-            
-            # Show alert in UI
-            st.error(f"🚨 ALERT TRIGGERED: {triggered['symbol']} {triggered['criteria']} is {triggered['condition']} {triggered['threshold']} (Current: {triggered['current_value']:.2f})")
-            
-            # Send Telegram notification
-            message = f"🚨 <b>DELTA ALERT</b>\n\n" \
-                     f"Symbol: {triggered['symbol']}\n" \
-                     f"Condition: {triggered['criteria']} {triggered['condition']} {triggered['threshold']}\n" \
-                     f"Current Value: {triggered['current_value']:.2f}\n" \
-                     f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            
-            if send_telegram_message(message):
-                st.success("📱 Telegram notification sent!")
+    for idx, row in df.iterrows():
+        table_html += "<tr>"
+        for col in df.columns:
+            if col == "Symbol":
+                table_html += f"<td class='symbol-cell'>{row[col]}</td>"
+            elif col == "UPNL (USD)":
+                table_html += f"<td>{badge_upnl(row[col])}</td>"
             else:
-                st.warning("⚠️ Failed to send Telegram notification")
+                table_html += f"<td>{row[col]}</td>"
+        symbol_encoded = row['Symbol'].replace(' ', '%20').replace('&', '%26')
+        table_html += f"""<td><a href="?edit_symbol={symbol_encoded}" target="_self" style="text-decoration: none;">
+                         <span class='alert-btn'>+</span></a></td>"""
+        table_html += "</tr>"
 
-else:
-    st.info("📭 No active positions found")
+    table_html += "</tbody></table>"
+    left_col.markdown(table_html, unsafe_allow_html=True)
 
-st.markdown("---")
+# --- RIGHT: ALERT EDITOR ---
+if st.session_state.edit_symbol:
+    matching_rows = df[df["Symbol"] == st.session_state.edit_symbol]
+    if not matching_rows.empty:
+        sel_row = matching_rows.iloc[0]
+        upnl_val = float(sel_row["UPNL (USD)"]) if sel_row["UPNL (USD)"] else 0
+        header_bg = "#4CAF50" if upnl_val > 0 else "#F44336" if upnl_val < 0 else "#999"
+        right_col.markdown(f"<div style='background:{header_bg};padding:10px;border-radius:8px'><b>Create Alert</b></div>", unsafe_allow_html=True)
+        right_col.markdown(f"**Symbol:** {st.session_state.edit_symbol}")
+        right_col.markdown(f"**UPNL (USD):** {badge_upnl(sel_row['UPNL (USD)'])}", unsafe_allow_html=True)
+        right_col.markdown(f"**Mark Price:** {sel_row['Mark Price']}")
 
-# ---------- Alert Management Section ----------
-st.subheader("⚠️ Alert Management")
-
-# Add new alert form
-with st.expander("➕ Add New Alert", expanded=len(st.session_state.alerts) == 0):
-    with st.form("add_alert_form"):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            alert_symbol = st.text_input("Symbol", placeholder="BTCUSDT", key="new_alert_symbol")
-            alert_criteria = st.selectbox("Criteria", ["price", "pnl", "pnl_percent"], key="new_alert_criteria")
-        
-        with col2:
-            alert_condition = st.selectbox("Condition", ["above", "below", "equal"], key="new_alert_condition")
-            alert_threshold = st.number_input("Threshold", value=0.0, step=0.01, key="new_alert_threshold")
-        
-        if st.form_submit_button("🔔 Add Alert", use_container_width=True):
-            if alert_symbol and alert_threshold != 0:
-                new_alert = {
-                    'symbol': alert_symbol.upper(),
-                    'criteria': alert_criteria,
-                    'condition': alert_condition,
-                    'threshold': float(alert_threshold)
-                }
-                if add_alert(new_alert):
+        with right_col.form("alert_form"):
+            criteria_choice = st.selectbox("Criteria", ["UPNL (USD)", "Mark Price"])
+            condition_choice = st.selectbox("Condition", [">=", "<="])
+            threshold_value = st.number_input("Threshold", format="%.2f")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.form_submit_button("Save Alert"):
+                    st.session_state.alerts.append({
+                        "symbol": st.session_state.edit_symbol,
+                        "criteria": criteria_choice,
+                        "condition": condition_choice,
+                        "threshold": threshold_value
+                    })
+                    st.session_state.edit_symbol = None
                     st.rerun()
-            else:
-                st.error("Please fill in all fields")
+            with col2:
+                if st.form_submit_button("Cancel"):
+                    st.session_state.edit_symbol = None
+                    st.rerun()
+    else:
+        right_col.error("Symbol not found")
+        st.session_state.edit_symbol = None
+else:
+    right_col.info("Click + button on any row to create alert")
 
-# Display existing alerts
+# --- ACTIVE ALERTS ---
+st.subheader("Active Alerts")
 if st.session_state.alerts:
-    st.subheader("📋 Active Alerts")
+    alerts_html = "<table class='full-width-table'><thead><tr>"
+    alerts_html += "<th>SYMBOL</th><th>CRITERIA</th><th>CONDITION</th><th>THRESHOLD</th><th>DELETE</th>"
+    alerts_html += "</tr></thead><tbody>"
     
     for i, alert in enumerate(st.session_state.alerts):
-        with st.container():
-            col1, col2, col3 = st.columns([3, 1, 1])
-            
-            with col1:
-                st.write(f"**{alert['symbol']}** - {alert['criteria']} {alert['condition']} {alert['threshold']}")
-                if alert.get('created_at'):
-                    st.caption(f"Created: {alert['created_at']}")
-            
-            with col2:
-                if st.button("🗑️", key=f"delete_{i}", help="Delete alert"):
-                    if delete_alert(i):
-                        st.rerun()
-            
-            with col3:
-                # Show current value if position exists
-                if not positions_df.empty:
-                    matching_pos = positions_df[positions_df['symbol'] == alert['symbol']]
-                    if not matching_pos.empty:
-                        current_val = None
-                        if alert['criteria'] == 'price':
-                            current_val = matching_pos.iloc[0].get('mark_price')
-                        elif alert['criteria'] == 'pnl':
-                            current_val = matching_pos.iloc[0].get('unrealized_pnl')
-                        elif alert['criteria'] == 'pnl_percent':
-                            current_val = matching_pos.iloc[0].get('unrealized_pnl_percent')
-                        
-                        if current_val is not None:
-                            st.metric("Current", f"{current_val:.2f}")
-            
-            st.markdown("---")
+        alerts_html += "<tr>"
+        alerts_html += f"<td class='symbol-cell'>{alert['symbol']}</td>"
+        alerts_html += f"<td>{alert['criteria']}</td>"
+        alerts_html += f"<td>{alert['condition']}</td>"
+        alerts_html += f"<td>{alert['threshold']}</td>"
+        alerts_html += f"<td><a href='?delete_alert={i}' target='_self' style='text-decoration: none;'><span style='color:#F44336;font-size:18px;cursor:pointer;'>❌</span></a></td>"
+        alerts_html += "</tr>"
+    
+    alerts_html += "</tbody></table>"
+    st.markdown(alerts_html, unsafe_allow_html=True)
 else:
-    st.info("📝 No alerts configured. Add your first alert above!")
-
-# ---------- Debug Section (can be removed in production) ----------
-with st.sidebar:
-    st.subheader("🔧 Debug Info")
-    st.write(f"Alerts in memory: {len(st.session_state.alerts)}")
-    
-    if st.button("🔍 Test Google Sheets"):
-        service = get_gsheets_service()
-        if service:
-            try:
-                result = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
-                st.success(f"✅ Connected to: {result.get('properties', {}).get('title', 'Spreadsheet')}")
-            except Exception as e:
-                st.error(f"❌ Test failed: {e}")
-        else:
-            st.error("❌ No service available")
-    
-    if st.button("🔍 Test Delta API"):
-        success, message = test_delta_api()
-        if success:
-            st.success(f"✅ {message}")
-        else:
-            st.error(f"❌ {message}")
-    
-    # Show API credentials (masked)
-    st.write("**API Config:**")
-    st.write(f"API Key: {API_KEY[:10]}...")
-    st.write(f"API Secret: {API_SECRET[:10]}...")
-    st.write(f"Base URL: {BASE_URL}")
+    st.write("No active alerts.")
