@@ -1,4 +1,8 @@
+
+
 streamlit
+streamlit-autorefresh
 pandas
 requests
-streamlit-autorefresh
+supabase-py==0.0.2
+
